@@ -248,7 +248,17 @@ def make_workspace(settings: Settings, folder: Path, repo: Path) -> None:
     repo.mkdir(parents=True)
     git(repo, "init", "--quiet")
     base = settings.base_sha or settings.base
-    git(repo, "fetch", "--quiet", "--no-tags", str(settings.repo), f"{base}:refs/heads/build-bench")
+    # Fetching a commit that is not a branch tip needs protocol v2 (git >= 2.26).
+    git(
+        repo,
+        "-c",
+        "protocol.version=2",
+        "fetch",
+        "--quiet",
+        "--no-tags",
+        str(settings.repo),
+        f"{base}:refs/heads/build-bench",
+    )
     git(repo, "checkout", "--quiet", "build-bench")
     if settings.plan_rel:
         shutil.copytree(folder / "plan", repo / settings.plan_rel, dirs_exist_ok=True)
