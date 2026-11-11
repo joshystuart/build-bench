@@ -254,6 +254,10 @@ def make_workspace(settings: Settings, folder: Path, repo: Path) -> None:
         if branch != "build-bench":
             git(repo, "branch", "--quiet", "-D", branch)
     git(repo, "remote", "remove", "origin")
+    # Tags can point past the base commit, at the finished work.
+    tags = git(repo, "tag", "--list").split()
+    if tags:
+        git(repo, "tag", "--delete", *tags)
     if settings.plan_rel:
         shutil.copytree(folder / "plan", repo / settings.plan_rel, dirs_exist_ok=True)
 
@@ -282,22 +286,12 @@ def save_diffs(settings: Settings, folder: Path, trial: Trial) -> None:
             shutil.copyfile(repo / ".git" / "index", index)
         env = {"GIT_INDEX_FILE": str(index)}
         git(repo, "add", "--all", env=env)
-        if settings.plan_rel:
-            git(
-                repo,
-                "rm",
-                "-r",
-                "--cached",
-                "--quiet",
-                "--ignore-unmatch",
-                "--",
-                settings.plan_rel,
-                env=env,
-            )
         tree = git(repo, "write-tree", env=env).strip()
-    (trial.folder / "diff.patch").write_text(git(repo, "diff", base, tree))
+    # The plan is diffed on its own below, whether git tracks it or not.
+    paths = ["--", ".", f":(exclude){settings.plan_rel}"] if settings.plan_rel else []
+    (trial.folder / "diff.patch").write_text(git(repo, "diff", base, tree, *paths))
     # Whole files on both sides, so measurements can see code around each change.
-    (trial.folder / "diff-full.patch").write_text(git(repo, "diff", "-U100000", base, tree))
+    (trial.folder / "diff-full.patch").write_text(git(repo, "diff", "-U100000", base, tree, *paths))
 
     plan_diff = ""
     if settings.plan_rel:

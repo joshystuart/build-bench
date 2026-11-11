@@ -230,6 +230,11 @@ Each Judge sees one Trial at a time under a random label (`trial-3fa9c1`),
 never the Variant's name, its model or other Trials, and never changes the
 saved Trial.
 
+Blindness has a known limit: a Trial's folder is named after its Variant, so
+absolute paths that tools write into ignored files (a virtualenv's scripts,
+build caches) can name it, and an Agent Judge's copy of the workspace keeps
+those files.
+
 - **Agent Judge** (`type: claude`): a headless Claude Code agent in a
   throwaway copy of the workspace with an empty config folder. The build's
   commits are folded into uncommitted changes on the base commit, since commit

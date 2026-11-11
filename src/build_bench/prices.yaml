@@ -14,5 +14,7 @@ claude-opus-4-6: {input: 5.0, output: 25.0}
 claude-sonnet-5-5: {input: 2.0, output: 10.0}
 claude-sonnet-5: {input: 2.0, output: 10.0}
 claude-sonnet-4-6: {input: 3.0, output: 15.0}
+# Haiku 5.5 rises to $0.50/$2.50 for prompts over 100K tokens; this table has
+# one rate per model, so override it if your Trials send long prompts.
 claude-haiku-5-5: {input: 0.10, output: 0.50}
 claude-haiku-4-5: {input: 1.0, output: 5.0}

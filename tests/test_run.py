@@ -388,3 +388,28 @@ def test_instruction_files_above_the_workspaces_are_warned_about(experiment, fak
     assert code == 0
     assert "Claude Code also reads instruction files in folders above" in out
     assert f"  {settings.parent / 'CLAUDE.md'}" in out
+
+
+def test_a_tracked_plan_is_kept_out_of_the_code_diff(experiment, fake, cli, target_repo):
+    plan = target_repo / "docs" / "plan"
+    plan.mkdir(parents=True)
+    (plan / "PLAN.md").write_text("- [ ] add mul\n")
+    git(target_repo, "add", "docs")
+    git(target_repo, "commit", "-q", "-m", "tracked plan")
+    settings = experiment(base="HEAD", plan="docs/plan")
+    assert cli("run", settings)[0] == 0
+    trial = results_folder(settings) / "trials" / "alpha-1"
+    for name in ("diff.patch", "diff-full.patch"):
+        diff = (trial / name).read_text()
+        assert "PLAN.md" not in diff, name
+        assert "fake_committed.txt" in diff
+    assert "+- [x] add mul" in (trial / "plan.diff").read_text()
+
+
+def test_tags_past_the_base_do_not_reach_the_trial(experiment, fake, cli, target_repo):
+    git(target_repo, "tag", "v1.0")  # on the commit after the base
+    settings = experiment()
+    assert cli("run", settings)[0] == 0
+    workspace = results_folder(settings) / "trials" / "alpha-1" / "workspace" / "repo"
+    assert git(workspace, "tag", "--list") == ""
+    assert git(target_repo, "tag", "--list") == "v1.0\n"
