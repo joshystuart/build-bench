@@ -1,0 +1,23 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 2efa513..01e9020 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -1 +1,2 @@
+ [[package]]
++name="x"
+diff --git a/src/lib.rs b/src/lib.rs
+index 82a3da1..732660a 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1 +1,2 @@
+ pub fn a() {}
++pub fn b() {}
+diff --git a/tests/it.rs b/tests/it.rs
+new file mode 100644
+index 0000000..232a00f
+--- /dev/null
++++ b/tests/it.rs
+@@ -0,0 +1,3 @@
++use x;
++#[test]
++fn t() {}

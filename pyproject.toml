@@ -1,0 +1,40 @@
+[project]
+name = "build-bench"
+version = "0.1.0"
+description = "Run the same build task under several coding-agent setups and compare the results."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.9,<3",
+    "pyyaml>=6.0,<7",
+    # Pinned exactly: litellm 1.82.7 and 1.82.8 on PyPI were malicious (March 2026).
+    "litellm==1.104.8",
+]
+
+[project.scripts]
+build-bench = "build_bench.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8.3", "ruff>=0.7"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/build_bench"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff.lint.per-file-ignores]
+# Fixture strings and expected output read better on one line.
+"tests/**" = ["E501"]
