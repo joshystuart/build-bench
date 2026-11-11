@@ -1,0 +1,2 @@
+{"type": "user", "timestamp": "2026-01-01T10:00:01.500Z", "isSidechain": true, "message": {"role": "user", "content": "review"}}
+{"type": "assistant", "timestamp": "2026-01-01T10:00:05.500Z", "message": {"id": "s1", "model": "claude-haiku-5-5", "role": "assistant", "content": [{"type": "text", "text": "Looks good."}], "usage": {"input_tokens": 1, "output_tokens": 10}}}

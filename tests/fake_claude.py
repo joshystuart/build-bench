@@ -1,0 +1,165 @@
+"""A stand-in for the `claude` executable, driven by a JSON control file.
+
+Control keys (all optional):
+    version       what `--version` reports
+    mode          ok | crash | hang | budget | fail_once
+    per_cwd       {substring of the working folder: mode}
+    sleep         seconds to wait before answering
+    summary       the final summary a build reports
+    judge_reply   the text a judge run replies with
+    judge_mode    mode for judge runs
+
+Every call is recorded as one JSON file in $FAKE_CLAUDE_LOG.
+"""
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+import uuid
+from pathlib import Path
+
+FIXTURE = Path(__file__).parent / "fixtures" / "transcripts" / "subagents"
+GOOD_VERDICT = """## 8. Verdict
+
+```json
+{"scores": {"correctness": 7, "spec_completeness": 6, "code_quality": 8,
+ "test_quality": 5, "honesty": 9}, "bugs": ["calc.py:3 off by one"], "note": "Fine."}
+```
+"""
+
+
+def main() -> int:
+    control_path = os.environ.get("FAKE_CLAUDE_CONTROL")
+    control = json.loads(Path(control_path).read_text()) if control_path else {}
+    args = sys.argv[1:]
+    if "--version" in args:
+        print(f"{control.get('version', '2.1.319')} (Claude Code)")
+        return 0
+
+    def option(name):
+        return args[args.index(name) + 1] if name in args else None
+
+    prompt = sys.stdin.read()
+    cwd = os.getcwd()
+    judge = '"correctness"' in prompt
+    mode = control.get("judge_mode" if judge else "mode", "ok")
+    for key, value in control.get("per_cwd", {}).items():
+        if key in cwd and not judge:
+            mode = value
+    log_dir = Path(os.environ["FAKE_CLAUDE_LOG"])
+    log_dir.mkdir(parents=True, exist_ok=True)
+    if mode == "fail_once":
+        marker = log_dir / ("failed-once-" + Path(cwd).parent.parent.name)
+        mode = "ok" if marker.exists() else "crash"
+        marker.touch()
+
+    config = Path(os.environ.get("CLAUDE_CONFIG_DIR", "/nonexistent"))
+    record = {
+        "argv": args,
+        "cwd": cwd,
+        "prompt": prompt,
+        "judge": judge,
+        "mode": mode,
+        "env": {
+            k: os.environ.get(k)
+            for k in (
+                "CLAUDE_CONFIG_DIR",
+                "ANTHROPIC_API_KEY",
+                "CLAUDE_CODE_OAUTH_TOKEN",
+                "CLAUDECODE",
+                "CLAUDE_CODE_SESSION_ID",
+                "CLAUDE_EFFORT",
+            )
+        },
+        "config_files": sorted(p.name for p in config.iterdir()) if config.is_dir() else None,
+        "cwd_files": sorted(
+            p.relative_to(cwd).as_posix()
+            for p in Path(cwd).rglob("*")
+            if ".git" not in p.relative_to(cwd).parts
+        ),
+        "git_log": subprocess.run(
+            ["git", "log", "--all", "--format=%B"], capture_output=True, text=True
+        ).stdout,
+        "git_reflog": subprocess.run(
+            ["git", "reflog", "--all"], capture_output=True, text=True
+        ).stdout,
+        "start": time.time(),
+    }
+    log_file = log_dir / f"{uuid.uuid4()}.json"
+    log_file.write_text(json.dumps(record))
+
+    if mode == "crash":
+        print("fake claude crashed on purpose", file=sys.stderr)
+        return 3
+    if mode == "hang":
+        time.sleep(600)
+    time.sleep(control.get("sleep", 0))
+
+    model = option("--model") or "?"
+    if judge:
+        Path(cwd, "judge-was-here.txt").write_text("the judge edits its copy\n")
+        Path(cwd, "fake_committed.txt").write_text("changed by the judge\n")
+    else:
+        _build(cwd, model)
+
+    session = option("--session-id") or str(uuid.uuid4())
+    project = config / "projects" / "-fake-project"
+    project.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(FIXTURE / "main.jsonl", project / f"{session}.jsonl")
+    shutil.copytree(FIXTURE / "subagents", project / session / "subagents")
+
+    print(json.dumps({"type": "system", "subtype": "init", "model": model}))
+    if mode == "budget":
+        result = {
+            "type": "result",
+            "subtype": "error_max_budget_usd",
+            "is_error": True,
+            "errors": ["Reached maximum budget"],
+            "total_cost_usd": 0.5,
+        }
+    else:
+        reply = control.get("judge_reply", GOOD_VERDICT) if judge else None
+        result = {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "result": reply if judge else control.get("summary", "Fake summary: all done."),
+            "total_cost_usd": 0.0123,
+        }
+    print(json.dumps(result))
+    record["end"] = time.time()
+    record["cwd_files_after"] = sorted(
+        p.relative_to(cwd).as_posix()
+        for p in Path(cwd).rglob("*")
+        if ".git" not in p.relative_to(cwd).parts
+    )
+    log_file.write_text(json.dumps(record))
+    return 0
+
+
+def _build(cwd: str, model: str) -> None:
+    def git(*args):
+        subprocess.run(
+            ["git", "-c", "user.name=Fake", "-c", "user.email=fake@example.com", *args],
+            check=True,
+            capture_output=True,
+        )
+
+    Path(cwd, "fake_committed.txt").write_text("committed by the fake agent\n")
+    git("add", "fake_committed.txt")
+    git("commit", "-q", "-m", f"fake commit by {model}")
+    Path(cwd, "fake_uncommitted.txt").write_text("left uncommitted\n")
+    for plan in sorted(Path(cwd).rglob("*.md")):
+        if ".git" in plan.parts:
+            continue
+        text = plan.read_text()
+        if "- [ ]" in text:
+            plan.write_text(text.replace("- [ ]", "- [x]", 1))
+            break
+
+
+if __name__ == "__main__":
+    sys.exit(main())

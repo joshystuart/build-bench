@@ -1,0 +1,33 @@
+diff --git a/Gemfile.lock b/Gemfile.lock
+index 27c61aa..1bb4e05 100644
+--- a/Gemfile.lock
++++ b/Gemfile.lock
+@@ -1 +1,2 @@
+-lock1
++lock2
++lock3
+diff --git a/app/main.rb b/app/main.rb
+index 422c2b7..a7bc997 100644
+--- a/app/main.rb
++++ b/app/main.rb
+@@ -1,2 +1,4 @@
+ a
+-b
++B
++c
++d
+diff --git a/app/new.rb b/app/new.rb
+new file mode 100644
+index 0000000..3e75765
+--- /dev/null
++++ b/app/new.rb
+@@ -0,0 +1 @@
++new
+diff --git a/spec/main_spec.rb b/spec/main_spec.rb
+index 587be6b..04ec35a 100644
+--- a/spec/main_spec.rb
++++ b/spec/main_spec.rb
+@@ -1 +1,3 @@
+ x
++y
++z

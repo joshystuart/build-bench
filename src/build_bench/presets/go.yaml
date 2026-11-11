@@ -1,0 +1,3 @@
+# Go.
+test_paths: ["**/*_test.go", "**/testdata/**"]
+ignore_paths: ["**/go.sum"]
