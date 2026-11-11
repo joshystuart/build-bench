@@ -1,0 +1,5 @@
+.scratch/
+reference/
+results/
+.venv/
+__pycache__/
