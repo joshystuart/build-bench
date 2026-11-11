@@ -242,22 +242,14 @@ def git(repo: Path, *args: str, env: dict | None = None) -> str:
 
 
 def make_workspace(settings: Settings, folder: Path, repo: Path) -> None:
-    """A clone at the base commit with no remote, and the plan copied in."""
-    repo.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        ["git", "clone", "--quiet", "--no-checkout", str(settings.repo), str(repo)],
-        check=True,
-        capture_output=True,
-    )
-    git(repo, "checkout", "--quiet", "-B", "build-bench", settings.base_sha or settings.base)
-    for branch in git(repo, "for-each-ref", "--format=%(refname:short)", "refs/heads").split():
-        if branch != "build-bench":
-            git(repo, "branch", "--quiet", "-D", branch)
-    git(repo, "remote", "remove", "origin")
-    # Tags can point past the base commit, at the finished work.
-    tags = git(repo, "tag", "--list").split()
-    if tags:
-        git(repo, "tag", "--delete", *tags)
+    """A repository holding only the base commit and its history, with no remote,
+    and the plan copied in. Nothing past the base (later commits, branches, tags,
+    reflogs) is fetched, so the agent cannot read the finished work."""
+    repo.mkdir(parents=True)
+    git(repo, "init", "--quiet")
+    base = settings.base_sha or settings.base
+    git(repo, "fetch", "--quiet", "--no-tags", str(settings.repo), f"{base}:refs/heads/build-bench")
+    git(repo, "checkout", "--quiet", "build-bench")
     if settings.plan_rel:
         shutil.copytree(folder / "plan", repo / settings.plan_rel, dirs_exist_ok=True)
 
@@ -288,7 +280,7 @@ def save_diffs(settings: Settings, folder: Path, trial: Trial) -> None:
         git(repo, "add", "--all", env=env)
         tree = git(repo, "write-tree", env=env).strip()
     # The plan is diffed on its own below, whether git tracks it or not.
-    paths = ["--", ".", f":(exclude){settings.plan_rel}"] if settings.plan_rel else []
+    paths = ["--", ".", f":(exclude,literal){settings.plan_rel}"] if settings.plan_rel else []
     (trial.folder / "diff.patch").write_text(git(repo, "diff", base, tree, *paths))
     # Whole files on both sides, so measurements can see code around each change.
     (trial.folder / "diff-full.patch").write_text(git(repo, "diff", "-U100000", base, tree, *paths))

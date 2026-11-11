@@ -406,10 +406,15 @@ def test_a_tracked_plan_is_kept_out_of_the_code_diff(experiment, fake, cli, targ
     assert "+- [x] add mul" in (trial / "plan.diff").read_text()
 
 
-def test_tags_past_the_base_do_not_reach_the_trial(experiment, fake, cli, target_repo):
+def test_nothing_past_the_base_reaches_the_trial(experiment, fake, cli, target_repo):
     git(target_repo, "tag", "v1.0")  # on the commit after the base
+    later = git(target_repo, "rev-parse", "HEAD").strip()
     settings = experiment()
     assert cli("run", settings)[0] == 0
     workspace = results_folder(settings) / "trials" / "alpha-1" / "workspace" / "repo"
     assert git(workspace, "tag", "--list") == ""
+    assert git(workspace, "branch", "--list", "--format=%(refname:short)") == "build-bench\n"
+    reflog = git(workspace, "reflog", "--all", "--format=%H")
+    objects = git(workspace, "cat-file", "--batch-all-objects", "--batch-check")
+    assert later not in reflog and later not in objects
     assert git(target_repo, "tag", "--list") == "v1.0\n"
