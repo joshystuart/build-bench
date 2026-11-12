@@ -61,8 +61,9 @@ def new_folder(settings: Settings) -> Path:
         folder = root / f"{stamp}-{n}"
     folder.mkdir(parents=True)
     # Results are kept out of git without touching the repository's .gitignore.
+    # Not when the settings file is in the results folder: `*` would ignore it too.
     ignore = settings.results / ".gitignore"
-    if not ignore.exists():
+    if not ignore.exists() and not settings.folder.is_relative_to(settings.results):
         ignore.write_text("*\n")
     return folder
 

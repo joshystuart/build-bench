@@ -207,6 +207,31 @@ def test_resumed_trials_use_the_skills_saved_when_the_experiment_started(experim
     assert "first" in (skill / "SKILL.md").read_text()
 
 
+def test_skills_never_land_in_a_linked_skills_folder(experiment, fake, cli):
+    exp = experiment().parent
+    make_skill(exp / "skills", "build-it")
+    shared = exp / "shared-skills"
+    make_skill(shared, "own")
+    (exp / "configs" / "base").mkdir(parents=True)
+    # A relative link, as a repository would commit it.
+    (exp / "configs" / "base" / "skills").symlink_to(Path("..") / ".." / "shared-skills")
+    settings = experiment(
+        variants=[
+            {
+                "name": "v",
+                "prompt": "prompts/build.md",
+                "model": "m",
+                "config": "configs/base",
+                "skills": ["skills/build-it"],
+            }
+        ]
+    )
+    assert cli("run", settings)[0] == 0
+    skills = workspace_home(results_folder(settings) / "trials" / "v-1") / "config" / "skills"
+    assert sorted(p.name for p in skills.iterdir()) == ["build-it", "own"]
+    assert sorted(p.name for p in shared.iterdir()) == ["own"]
+
+
 def test_bad_skills_are_rejected(experiment, cli):
     exp = experiment().parent
     make_skill(exp / "skills", "fine")
@@ -522,6 +547,13 @@ def test_the_results_setting_moves_the_results(experiment, fake, cli, tmp_path):
     [folder] = (tmp_path / "elsewhere" / "demo").iterdir()
     assert (folder / "trials" / "alpha-1" / "status.json").is_file()
     assert not (settings.parent / ".bench").exists()
+
+
+def test_results_beside_the_settings_never_git_ignore_the_settings(experiment, fake, cli):
+    settings = experiment(results=".")
+    assert cli("run", settings)[0] == 0
+    assert (settings.parent / "demo").is_dir()
+    assert not (settings.parent / ".gitignore").exists()
 
 
 def test_a_benchrc_above_the_current_folder_is_the_default_settings(

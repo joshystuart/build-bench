@@ -200,7 +200,14 @@ def _build(settings: Settings, folder: Path, trial: Trial, agent: Agent, secret:
     else:
         config.mkdir(parents=True)
     if (folder / "skills" / variant.name).is_dir():
-        shutil.copytree(folder / "skills" / variant.name, config / "skills", dirs_exist_ok=True)
+        skills = config / "skills"
+        if skills.is_symlink():
+            # Copy what the link points at, so the Variant's skills never land in it.
+            # Resolved from the original config, where a relative link still works.
+            target = (variant.config / "skills").resolve()
+            skills.unlink()
+            shutil.copytree(target, skills, symlinks=True)
+        shutil.copytree(folder / "skills" / variant.name, skills, dirs_exist_ok=True)
 
     pre_build_seconds = 0.0
     with (trial.folder / "pre_build.log").open("w") as log:
