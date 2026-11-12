@@ -18,9 +18,11 @@ import yaml
 from .agent import Agent, AgentRequest, ClaudeCode
 from .results import (
     Trial,
+    new_workspaces,
     planned_trials,
     read_json,
     saved_trials,
+    workspaces,
     write_json,
 )
 from .settings import DEFAULT_AUTH_ENV, Settings
@@ -59,8 +61,24 @@ def inherited_instructions(folder: Path) -> list[Path]:
     return found
 
 
+def save_skills(settings: Settings, folder: Path) -> None:
+    """Copy each Variant's skills into the results folder the first time it runs there.
+
+    Trials take their skills from this copy, so a resumed Experiment runs the
+    same skills as its first Trials even if the originals have changed since.
+    """
+    for variant in settings.variants:
+        saved = folder / "skills" / variant.name
+        if not variant.skills or saved.exists():
+            continue
+        for skill in variant.skills:
+            # Links are followed, so the copy holds what they pointed at.
+            shutil.copytree(skill, saved / skill.name)
+
+
 def start_folder(settings: Settings, folder: Path, version: str) -> None:
     """Save the Experiment's own files the first time a results folder is used."""
+    save_skills(settings, folder)
     if (folder / "experiment.json").exists():
         experiment = read_json(folder / "experiment.json")
         versions = experiment.setdefault("claude_versions", [])
@@ -81,6 +99,7 @@ def start_folder(settings: Settings, folder: Path, version: str) -> None:
             "base": settings.base,
             "base_sha": settings.base_sha,
             "plan": settings.plan_rel,
+            "workspaces": str(new_workspaces(folder)),
             "auth": settings.auth,
             "claude_version": version,
             "claude_versions": [version],
@@ -104,14 +123,14 @@ def run(
     secret = os.environ[settings.auth_variable]
     version = preflight(settings, agent)
     say(WARNING)
-    inherited = inherited_instructions(folder)
+    start_folder(settings, folder, version)
+    inherited = inherited_instructions(workspaces(folder) or folder)
     if inherited:
         say(
             "WARNING: Claude Code also reads instruction files in folders above a Trial's\n"
-            "workspace, so these reach every Trial. Move them, or move the settings file:\n"
+            "workspace, so these reach every Trial. Move them:\n"
             + "\n".join(f"  {p}" for p in inherited)
         )
-    start_folder(settings, folder, version)
 
     todo = [t for t in planned_trials(settings, folder) if not t.finished]
     skipped = len(planned_trials(settings, folder)) - len(todo)
@@ -148,6 +167,8 @@ def build_trial(
     if trial.folder.exists():
         # A failed Trial is run again from nothing, never patched up.
         shutil.rmtree(trial.folder)
+    if trial.home.exists():
+        shutil.rmtree(trial.home)
     trial.folder.mkdir(parents=True)
     status = {
         "trial": trial.id,
@@ -172,12 +193,21 @@ def build_trial(
 def _build(settings: Settings, folder: Path, trial: Trial, agent: Agent, secret: str) -> dict:
     variant = next(v for v in settings.variants if v.name == trial.variant)
     repo = trial.workspace
-    config = trial.folder / "workspace" / "config"
+    config = trial.home / "config"
     make_workspace(settings, folder, repo)
     if variant.config is not None:
         shutil.copytree(variant.config, config, symlinks=True)
     else:
         config.mkdir(parents=True)
+    if (folder / "skills" / variant.name).is_dir():
+        skills = config / "skills"
+        if skills.is_symlink():
+            # Copy what the link points at, so the Variant's skills never land in it.
+            # Resolved from the original config, where a relative link still works.
+            target = (variant.config / "skills").resolve()
+            skills.unlink()
+            shutil.copytree(target, skills, symlinks=True)
+        shutil.copytree(folder / "skills" / variant.name, skills, dirs_exist_ok=True)
 
     pre_build_seconds = 0.0
     with (trial.folder / "pre_build.log").open("w") as log:
@@ -297,15 +327,19 @@ def save_diffs(settings: Settings, folder: Path, trial: Trial) -> None:
 
     plan_diff = ""
     if settings.plan_rel:
-        after = (repo / settings.plan_rel).relative_to(folder).as_posix()
-        plan_diff = subprocess.run(
-            ["git", "diff", "--no-index", "--no-prefix", "plan", after],
-            cwd=folder,
-            capture_output=True,
-            text=True,
-        ).stdout
-        # Name both sides by the plan's path in the repository, never by the
-        # Trial folder (which names the Variant).
+        # Both sides side by side in one folder, so the diff names short relative paths.
+        with tempfile.TemporaryDirectory(prefix="build-bench-plan-") as tmp:
+            after = "plan-after"
+            shutil.copytree(folder / "plan", Path(tmp) / "plan", symlinks=True)
+            if (repo / settings.plan_rel).is_dir():
+                shutil.copytree(repo / settings.plan_rel, Path(tmp) / after, symlinks=True)
+            plan_diff = subprocess.run(
+                ["git", "diff", "--no-index", "--no-prefix", "plan", after],
+                cwd=tmp,
+                capture_output=True,
+                text=True,
+            ).stdout
+        # Name both sides by the plan's path in the repository.
         header = re.compile(r"^(diff --git |--- |\+\+\+ )(.*)$", re.M)
         plan_diff = header.sub(
             lambda m: (

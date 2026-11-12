@@ -31,7 +31,9 @@ build-bench --help
 
 ## Commands
 
-Every command takes the settings file. `judge`, `report` and `clean` use the
+Every command takes the settings file. Leave it out and the nearest `.benchrc`
+is used: the one in the current folder, or else in the first folder above it
+that has one, the way git finds `.git`. `judge`, `report` and `clean` use the
 latest results folder for the Experiment unless you pass `--results DIR`.
 
 | Command | What it does |
@@ -40,7 +42,7 @@ latest results folder for the Experiment unless you pass `--results DIR`.
 | `build-bench judge settings.yml` | Measures every finished Trial, then asks every Judge for a Verdict. Skips work already saved, so a Judge added later only judges. |
 | `build-bench report settings.yml` | Writes `report.json`, `report.md` and `report.html` from the results folder alone. Starts no agent and calls no model. |
 | `build-bench all settings.yml` | `run`, `judge` and `report` in series, into a new results folder. Carries on past failed Trials. |
-| `build-bench clean settings.yml` | Deletes the Trial workspaces of a results folder and keeps everything else. |
+| `build-bench clean settings.yml` | Deletes the Trial workspaces of a results folder (kept outside it, under `~/.cache/build-bench/`) and keeps everything else. |
 
 Exit codes: `0` when everything worked, `1` when a Trial or a Verdict failed
 (the rest are still saved and reported), `2` when nothing could start (bad
@@ -59,7 +61,9 @@ Running `run --resume` runs it again from nothing.
 
 ## The settings file
 
-One YAML file per Experiment. Paths are relative to the settings file, except
+One YAML file per Experiment. Name it `.benchrc` at the root of a repository
+to make it that repository's default (`repo: .`), or name it anything and pass
+it to each command. Paths are relative to the settings file, except
 `plan`, which is a folder inside the target repository, given relative to the
 repository (it is copied to the same place in every Trial).
 
@@ -68,6 +72,7 @@ name: opus-vs-sonnet            # letters, digits, . _ -
 repo: ../my-project             # the target repository
 base: 6ec95b3                   # any commit-ish in that repository
 plan: .scratch/my-plan          # optional; may be ignored by git
+results: .bench/results         # optional; this is the default
 pre_build: [npm ci]             # optional; run in each Trial before the agent
 checks: npm run check           # optional; run by `judge` in a copy of each Trial
 concurrency: 2                  # Trials (and Judges) at once
@@ -86,6 +91,9 @@ variants:
     model: claude-opus-5-5
     effort: high                # optional: low, medium, high, xhigh, max
     config: configs/plain       # optional; copied fresh for each Trial
+    skills:                     # optional skill folders (each holds a SKILL.md); ~ allowed
+      - skills/tdd
+      - ~/.agents/skills/code-review
     repeats: 3
   - name: sonnet-subagents
     prompt: prompts/subagents.md
@@ -126,6 +134,27 @@ subscription rate limits can slow Trials down, so trust time less there.
 [docs/headless-trials.md](docs/headless-trials.md) records exactly how a
 Trial's agent is started and what each login does with a separate config
 folder.
+
+### Keeping Experiments in the repository they build
+
+Commit the Experiment and let git ignore its results:
+
+```
+my-project/
+  .benchrc                    # the default Experiment: repo: .
+  .bench/
+    prompts/  configs/  skills/   # committed
+    results/                  # ignored: build-bench writes a `.gitignore` of `*` here
+```
+
+```sh
+cd my-project && build-bench all
+```
+
+The repository's own `CLAUDE.md` does not reach the Trials through the results
+folder, because Trial workspaces are kept elsewhere (see "What a Trial is").
+Each Trial still reads the `CLAUDE.md` in its own clone, as part of what is
+being built.
 
 ### Example Experiment
 
@@ -182,19 +211,27 @@ tick each criterion in the plan as you finish it, and run the tests.
 export CLAUDE_CODE_OAUTH_TOKEN=...   # from `claude setup-token`
 export OPENAI_API_KEY=...
 build-bench all experiments/settings.yml
-open experiments/results/calc-mul/*/report.html
+open experiments/.bench/results/calc-mul/*/report.html
 ```
 
 ## What a Trial is
 
 - **Workspace:** a local clone of `repo` at `base`, with its remote removed,
   so the agent cannot push anywhere and your checkout is never touched. The
-  plan folder is copied in at the same relative path.
+  plan folder is copied in at the same relative path. Workspaces live under
+  `$XDG_CACHE_HOME/build-bench/workspaces/` (default `~/.cache`), not in the
+  results folder, so nothing above them (a `CLAUDE.md`, `node_modules`, tool
+  configs) comes from the repository the Experiment is kept in.
 - **Config:** the Variant's `config` folder is copied into a fresh folder and
   Claude Code is pointed at it with `CLAUDE_CONFIG_DIR`, so your own
-  `~/.claude` (skills, settings, memory) does not leak in. `CLAUDE.md` files in
-  folders above the results folder *do* reach the agent; `run` warns about
-  them.
+  `~/.claude` (skills, settings, memory) does not leak in. The Variant's
+  `skills` are added to it as `skills/<folder name>/`, so skills that refer to
+  each other as `../<skill>/` find each other; a skill with a built-in's name
+  (such as `code-review`) replaces the built-in. The skills are copied into the
+  results folder when a Variant first runs there, and every Trial of it,
+  including ones `run --resume` builds later, gets that copy: changing the
+  originals afterwards does not change the Experiment. `CLAUDE.md` files in
+  folders above the workspaces *do* reach the agent; `run` warns about them.
 - **Preparation:** `pre_build` steps run in the workspace first. Their time is
   not part of the Trial's time, and they use no tokens. A failing step fails
   the Trial before the agent starts.
@@ -268,19 +305,22 @@ has a "Show as table" alternative for every chart.
 ## The results folder
 
 ```
-results/<experiment>/<start time>/
-  experiment.json  settings.yml  plan/
+.bench/results/<experiment>/<start time>/       (or `results` from the settings)
+  experiment.json  settings.yml  plan/  skills/<variant>/<skill>/
   trials/<variant>-<repeat>/
     status.json  prompt.md  stream.jsonl  stderr.log  summary.md
     transcript/main.jsonl  transcript/subagents/
     diff.patch  diff-full.patch  plan.diff  timings.json  pre_build.log
     measurements.json  checks.log  verdicts/<judge>.json
-    workspace/                (removed by `clean`)
   report.json  report.md  report.html
 ```
 
-Every phase reads and writes only this folder, so a finished Experiment can be
-judged again with a new Judge, or reported again, without rebuilding.
+The Trial workspaces sit apart, in the folder `experiment.json` names under
+`workspaces` (`~/.cache/build-bench/workspaces/<experiment>-<start time>-<hash>/`),
+one `<variant>-<repeat>/repo` and `config` per Trial. `clean` removes them.
+Everything else every phase reads and writes is in the results folder, so a
+finished Experiment can be judged again with a new Judge, or reported again,
+without rebuilding (an Agent Judge also needs the workspaces).
 
 ## Why LiteLLM is pinned
 

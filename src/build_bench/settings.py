@@ -53,6 +53,7 @@ class Variant(_Strict):
     model: str
     effort: Literal["low", "medium", "high", "xhigh", "max"] | None = None
     config: Path | None = None
+    skills: list[Path] = []
     repeats: int = Field(default=1, ge=1)
 
 
@@ -71,6 +72,7 @@ class Settings(_Strict):
     repo: Path
     base: str
     plan: Path | None = None
+    results: Path = Path(".bench/results")
     pre_build: list[str] = []
     checks: str | None = None
     concurrency: int = Field(default=1, ge=1)
@@ -114,6 +116,18 @@ class Settings(_Strict):
         )
 
 
+#: The settings file the commands use when none is named.
+DEFAULT_NAME = ".benchrc"
+
+
+def find_default(start: Path) -> Path:
+    """The nearest `.benchrc` in `start` or a folder above it."""
+    for folder in [start, *start.parents]:
+        if (folder / DEFAULT_NAME).is_file():
+            return folder / DEFAULT_NAME
+    raise SettingsError([f"no settings file given and no {DEFAULT_NAME} in {start} or above it"])
+
+
 def load(path: str | Path) -> Settings:
     """Read the settings file, resolve its paths and check everything that can be checked."""
     path = Path(path).resolve()
@@ -153,6 +167,7 @@ def _check(s: Settings) -> list[str]:
     folder = s.folder
 
     s.repo = (folder / s.repo).resolve()
+    s.results = (folder / s.results).resolve()
     if not (s.repo / ".git").exists():
         problems.append(f"repo: not a git repository: {s.repo}")
     else:
@@ -191,6 +206,7 @@ def _check(s: Settings) -> list[str]:
             variant.config = (folder / variant.config).resolve()
             if not variant.config.is_dir():
                 problems.append(f"variants.{i}.config: folder not found: {variant.config}")
+        problems += _check_skills(variant, f"variants.{i}", folder)
 
     judge_names = [j.name for j in s.judges]
     for name in sorted({n for n in judge_names if judge_names.count(n) > 1}):
@@ -208,6 +224,25 @@ def _check(s: Settings) -> list[str]:
     for i, language in enumerate(s.languages):
         if find_preset(s, language) is None:
             problems.append(f"languages.{i}: no preset named {language!r}")
+    return problems
+
+
+def _check_skills(variant: Variant, where: str, folder: Path) -> list[str]:
+    """Resolve a Variant's skill folders; each becomes `skills/<folder name>` in its config."""
+    problems = []
+    variant.skills = [(folder / p.expanduser()).resolve() for p in variant.skills]
+    names = [p.name for p in variant.skills]
+    for name in sorted({n for n in names if names.count(n) > 1}):
+        problems.append(f"{where}.skills: skill {name!r} is listed more than once")
+    for j, skill in enumerate(variant.skills):
+        if not skill.is_dir():
+            problems.append(f"{where}.skills.{j}: folder not found: {skill}")
+        elif not (skill / "SKILL.md").is_file():
+            problems.append(f"{where}.skills.{j}: no SKILL.md in {skill}")
+        elif variant.config is not None and (variant.config / "skills" / skill.name).exists():
+            problems.append(
+                f"{where}.skills.{j}: the config folder already has a skill named {skill.name!r}"
+            )
     return problems
 
 

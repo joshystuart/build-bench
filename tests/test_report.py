@@ -95,7 +95,7 @@ def saved(experiment):
         ],
         judges=[{"name": "j", "type": "api", "model": "openai/gpt-5"}],
     )
-    folder = settings.parent / "results" / "demo" / "20260101-000000"
+    folder = settings.parent / ".bench" / "results" / "demo" / "20260101-000000"
     write(folder / "experiment.json", {"name": "demo", "auth": "subscription"})
     trial(
         folder,
@@ -238,7 +238,7 @@ def test_flags(saved, cli, no_models):
 
 def test_one_version_and_api_key_are_not_flagged(experiment, cli, no_models):
     settings = experiment()
-    folder = settings.parent / "results" / "demo" / "20260101-000000"
+    folder = settings.parent / ".bench" / "results" / "demo" / "20260101-000000"
     write(folder / "experiment.json", {"name": "demo", "auth": "api-key"})
     trial(folder, "alpha-1")
     assert cli("report", settings)[0] == 0

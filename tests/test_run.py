@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 
 import yaml
-from conftest import API_KEY, OAUTH_TOKEN, git, results_folder
+from conftest import API_KEY, OAUTH_TOKEN, git, results_folder, workspace_home
 
 # --- Settings ------------------------------------------------------------------
 
@@ -86,7 +86,7 @@ def test_one_trial_end_to_end(experiment, fake, cli, target_repo):
     # The agent ran in a clone at the base commit with no remote and the plan copied in.
     [call] = fake.calls()
     workspace = Path(call["cwd"])
-    assert workspace == trial / "workspace" / "repo"
+    assert workspace == workspace_home(trial) / "repo"
     assert git(workspace, "remote") == ""
     base = git(target_repo, "rev-parse", "HEAD~1").strip()
     assert git(workspace, "rev-parse", "HEAD~1").strip() == base  # the fake added one commit
@@ -140,6 +140,133 @@ def test_an_experiment_with_no_plan_runs(experiment, fake, cli):
     assert (results_folder(settings) / "trials" / "solo-1" / "plan.diff").read_text() == ""
 
 
+# --- Skills ------------------------------------------------------------------------
+
+
+def make_skill(folder: Path, name: str, body: str = "v1") -> Path:
+    skill = folder / name
+    skill.mkdir(parents=True, exist_ok=True)
+    (skill / "SKILL.md").write_text(f"---\nname: {name}\ndescription: test\n---\n{body}\n")
+    return skill
+
+
+def test_a_variants_skills_are_added_to_its_config(experiment, fake, cli, tmp_path):
+    exp = experiment().parent
+    make_skill(exp / "skills", "build-it")
+    make_skill(tmp_path / "home-skills", "review-it")
+    (exp / "skills" / "build-it" / "scripts").mkdir()
+    (exp / "skills" / "build-it" / "scripts" / "go.sh").write_text("echo go\n")
+    (exp / "configs" / "base" / "skills" / "own").mkdir(parents=True)
+    (exp / "configs" / "base" / "skills" / "own" / "SKILL.md").write_text("own\n")
+    settings = experiment(
+        variants=[
+            {
+                "name": "skilled",
+                "prompt": "prompts/build.md",
+                "model": "m",
+                "config": "configs/base",
+                "skills": ["skills/build-it", str(tmp_path / "home-skills" / "review-it")],
+            },
+            {"name": "plain", "prompt": "prompts/build.md", "model": "m"},
+        ]
+    )
+    assert cli("run", settings)[0] == 0
+    folder = results_folder(settings)
+    skills = workspace_home(folder / "trials" / "skilled-1") / "config" / "skills"
+    assert sorted(p.name for p in skills.iterdir()) == ["build-it", "own", "review-it"]
+    assert (skills / "build-it" / "scripts" / "go.sh").read_text() == "echo go\n"
+    assert not (workspace_home(folder / "trials" / "plain-1") / "config" / "skills").exists()
+    # The results folder keeps the skills each Variant ran with.
+    saved = folder / "skills" / "skilled"
+    assert sorted(p.name for p in saved.iterdir()) == ["build-it", "review-it"]
+    assert "v1" in (saved / "build-it" / "SKILL.md").read_text()
+    # The developer's own folders are copied, never changed.
+    assert sorted(p.name for p in (exp / "configs" / "base" / "skills").iterdir()) == ["own"]
+
+
+def test_resumed_trials_use_the_skills_saved_when_the_experiment_started(experiment, fake, cli):
+    exp = experiment().parent
+    make_skill(exp / "skills", "build-it", body="first")
+    fake.set(per_cwd={"/v-2/": "fail_once"})
+    settings = experiment(
+        variants=[
+            {
+                "name": "v",
+                "prompt": "prompts/build.md",
+                "model": "m",
+                "repeats": 2,
+                "skills": ["skills/build-it"],
+            }
+        ]
+    )
+    assert cli("run", settings)[0] == 1
+    make_skill(exp / "skills", "build-it", body="second")
+    assert cli("run", settings, "--resume")[0] == 0
+    folder = results_folder(settings)
+    skill = workspace_home(folder / "trials" / "v-2") / "config" / "skills" / "build-it"
+    assert "first" in (skill / "SKILL.md").read_text()
+
+
+def test_skills_never_land_in_a_linked_skills_folder(experiment, fake, cli):
+    exp = experiment().parent
+    make_skill(exp / "skills", "build-it")
+    shared = exp / "shared-skills"
+    make_skill(shared, "own")
+    (exp / "configs" / "base").mkdir(parents=True)
+    # A relative link, as a repository would commit it.
+    (exp / "configs" / "base" / "skills").symlink_to(Path("..") / ".." / "shared-skills")
+    settings = experiment(
+        variants=[
+            {
+                "name": "v",
+                "prompt": "prompts/build.md",
+                "model": "m",
+                "config": "configs/base",
+                "skills": ["skills/build-it"],
+            }
+        ]
+    )
+    assert cli("run", settings)[0] == 0
+    skills = workspace_home(results_folder(settings) / "trials" / "v-1") / "config" / "skills"
+    assert sorted(p.name for p in skills.iterdir()) == ["build-it", "own"]
+    assert sorted(p.name for p in shared.iterdir()) == ["own"]
+
+
+def test_bad_skills_are_rejected(experiment, cli):
+    exp = experiment().parent
+    make_skill(exp / "skills", "fine")
+    make_skill(exp / "other", "fine")
+    make_skill(exp / "skills", "taken")
+    (exp / "skills" / "no-skill-md").mkdir(parents=True)
+    (exp / "configs" / "base" / "skills" / "taken").mkdir(parents=True)
+    settings = experiment(
+        variants=[
+            {
+                "name": "a",
+                "prompt": "prompts/build.md",
+                "model": "m",
+                "config": "configs/base",
+                "skills": [
+                    "skills/missing",
+                    "skills/no-skill-md",
+                    "skills/fine",
+                    "other/fine",
+                    "skills/taken",
+                ],
+            }
+        ]
+    )
+    code, _, err = cli("run", settings)
+    assert code == 2
+    for expected in [
+        "variants.0.skills.0: folder not found",
+        "variants.0.skills.1: no SKILL.md in",
+        "variants.0.skills: skill 'fine' is listed more than once",
+        "variants.0.skills.4: the config folder already has a skill named 'taken'",
+    ]:
+        assert expected in err
+
+
 # --- Config, login and limits ----------------------------------------------------
 
 
@@ -161,14 +288,14 @@ def test_each_trial_gets_a_fresh_copy_of_its_variants_config(experiment, fake, c
         ]
     )
     assert cli("run", settings)[0] == 0
-    calls = {Path(c["cwd"]).parent.parent.name: c for c in fake.calls()}
+    calls = {Path(c["cwd"]).parent.name: c for c in fake.calls()}
     assert calls["v1-1"]["config_files"] == ["marker-one"]
     assert calls["v1-2"]["config_files"] == ["marker-one"]
     assert calls["v2-1"]["config_files"] == ["marker-two"]
     dirs = {c["env"]["CLAUDE_CONFIG_DIR"] for c in calls.values()}
     assert len(dirs) == 3
     for trial, call in calls.items():
-        assert call["env"]["CLAUDE_CONFIG_DIR"].endswith(f"trials/{trial}/workspace/config")
+        assert call["env"]["CLAUDE_CONFIG_DIR"].endswith(f"/{trial}/config")
     # The developer's own config is copied, never changed.
     assert sorted(p.name for p in (exp / "configs" / "one").iterdir()) == ["marker-one"]
 
@@ -310,7 +437,7 @@ def test_pre_build_runs_first_and_is_not_timed_or_diffed(experiment, fake, cli):
     assert cli("run", settings)[0] == 0
     trial = results_folder(settings) / "trials" / "alpha-1"
     [call] = fake.calls()
-    stamp = float((trial / "workspace/repo/build/stamp").read_text())
+    stamp = float((workspace_home(trial) / "repo/build/stamp").read_text())
     assert stamp <= call["start"]
     assert "build/cache.txt" in call["cwd_files"]
     timings = json.loads((trial / "timings.json").read_text())
@@ -364,10 +491,10 @@ def test_running_again_finishes_only_missing_and_failed_trials(experiment, fake,
     assert code == 0, out
     calls = fake.calls()
     assert len(calls) == 8
-    rerun = sorted(Path(c["cwd"]).parent.parent.name for c in calls[6:])
+    rerun = sorted(Path(c["cwd"]).parent.name for c in calls[6:])
     assert rerun == ["v1-3", "v2-1"]
     assert "Skipping 4 finished Trial(s)." in out
-    assert sorted(p.name for p in (settings.parent / "results" / "demo").iterdir()) == [folder.name]
+    assert sorted(p.name for p in folder.parent.iterdir()) == [folder.name]
     statuses = [json.loads(p.read_text()) for p in (folder / "trials").glob("*/status.json")]
     assert all(s["status"] == "finished" for s in statuses)
 
@@ -381,13 +508,76 @@ def test_run_into_a_named_results_folder(experiment, fake, cli):
     assert yaml.safe_load((folder / "settings.yml").read_text())["name"] == "demo"
 
 
-def test_instruction_files_above_the_workspaces_are_warned_about(experiment, fake, cli):
+def test_workspaces_live_outside_the_results_folder(experiment, fake, cli, cache_home):
+    # An Experiment kept inside a repository whose CLAUDE.md must not reach the Trials.
     settings = experiment()
     (settings.parent / "CLAUDE.md").write_text("Reply with PINEAPPLE.\n")
     code, out, _ = cli("run", settings)
     assert code == 0
+    assert "Claude Code also reads instruction files" not in out
+    folder = results_folder(settings)
+    [call] = fake.calls()
+    home = workspace_home(folder / "trials" / "alpha-1")
+    assert Path(call["cwd"]) == home / "repo"
+    assert home.is_relative_to(cache_home / "build-bench" / "workspaces")
+    assert not Path(call["cwd"]).is_relative_to(settings.parent)
+    assert not (folder / "trials" / "alpha-1" / "workspace").exists()
+
+
+def test_instruction_files_above_the_workspaces_are_warned_about(experiment, fake, cli, cache_home):
+    cache_home.mkdir()
+    (cache_home / "CLAUDE.md").write_text("Reply with PINEAPPLE.\n")
+    code, out, _ = cli("run", experiment())
+    assert code == 0
     assert "Claude Code also reads instruction files in folders above" in out
-    assert f"  {settings.parent / 'CLAUDE.md'}" in out
+    assert f"  {cache_home / 'CLAUDE.md'}" in out
+
+
+def test_results_go_in_a_git_ignored_folder_beside_the_settings(experiment, fake, cli):
+    settings = experiment()
+    assert cli("run", settings)[0] == 0
+    root = settings.parent / ".bench" / "results"
+    assert (root / ".gitignore").read_text() == "*\n"
+    assert results_folder(settings).parent == root / "demo"
+
+
+def test_the_results_setting_moves_the_results(experiment, fake, cli, tmp_path):
+    settings = experiment(results="../elsewhere")
+    assert cli("run", settings)[0] == 0
+    [folder] = (tmp_path / "elsewhere" / "demo").iterdir()
+    assert (folder / "trials" / "alpha-1" / "status.json").is_file()
+    assert not (settings.parent / ".bench").exists()
+
+
+def test_results_beside_the_settings_never_git_ignore_the_settings(experiment, fake, cli):
+    settings = experiment(results=".")
+    assert cli("run", settings)[0] == 0
+    assert (settings.parent / "demo").is_dir()
+    assert not (settings.parent / ".gitignore").exists()
+
+
+def test_a_benchrc_above_the_current_folder_is_the_default_settings(
+    experiment, fake, cli, monkeypatch
+):
+    settings = experiment()
+    benchrc = settings.parent / ".benchrc"
+    settings.rename(benchrc)
+    below = settings.parent / "some" / "folder"
+    below.mkdir(parents=True)
+    monkeypatch.chdir(below)
+    code, out, _ = cli("run")
+    assert code == 0, out
+    [folder] = (settings.parent / ".bench" / "results" / "demo").iterdir()
+    assert json.loads((folder / "experiment.json").read_text())["settings_file"] == str(benchrc)
+    assert cli("report")[0] == 0
+    assert (folder / "report.md").is_file()
+
+
+def test_no_settings_and_no_benchrc_is_unusable(cli, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    code, _, err = cli("all")
+    assert code == 2
+    assert "no settings file given and no .benchrc" in err
 
 
 def test_a_tracked_plan_is_kept_out_of_the_code_diff(experiment, fake, cli, target_repo):
@@ -411,7 +601,7 @@ def test_nothing_past_the_base_reaches_the_trial(experiment, fake, cli, target_r
     later = git(target_repo, "rev-parse", "HEAD").strip()
     settings = experiment()
     assert cli("run", settings)[0] == 0
-    workspace = results_folder(settings) / "trials" / "alpha-1" / "workspace" / "repo"
+    workspace = workspace_home(results_folder(settings) / "trials" / "alpha-1") / "repo"
     assert git(workspace, "tag", "--list") == ""
     assert git(workspace, "branch", "--list", "--format=%(refname:short)") == "build-bench\n"
     reflog = git(workspace, "reflog", "--all", "--format=%H")

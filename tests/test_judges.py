@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import litellm
 import pytest
-from conftest import results_folder
+from conftest import results_folder, workspace_home
 
 GOOD = """## 1. Summary
 Looks fine.
@@ -243,10 +243,10 @@ def tree_hash(folder: Path) -> str:
 def test_agent_judge_works_in_a_throwaway_copy(experiment, fake, cli):
     settings = built(experiment, cli, judges=[agent_judge(effort="medium")])
     trial = results_folder(settings) / "trials" / "secretvariant-1"
-    before = tree_hash(trial / "workspace")
+    before = tree_hash(workspace_home(trial))
     code, out, _ = cli("judge", settings)
     assert code == 0, out
-    assert tree_hash(trial / "workspace") == before
+    assert tree_hash(workspace_home(trial)) == before
     calls = fake.calls(judge=True)
     assert len(calls) == 2
     call = calls[0]
