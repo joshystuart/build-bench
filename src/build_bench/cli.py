@@ -22,7 +22,11 @@ def _parser() -> argparse.ArgumentParser:
 
     def add(name: str, help: str, results: bool = True) -> argparse.ArgumentParser:
         command = commands.add_parser(name, help=help, description=help)
-        command.add_argument("settings", help="the Experiment's settings file")
+        command.add_argument(
+            "settings",
+            nargs="?",
+            help="the Experiment's settings file (default: the nearest .benchrc)",
+        )
         if results:
             command.add_argument(
                 "--results", metavar="DIR", help="results folder (default: the latest one)"
@@ -45,7 +49,8 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
-        settings = settings_module.load(args.settings)
+        path = args.settings or settings_module.find_default(Path.cwd())
+        settings = settings_module.load(path)
     except settings_module.SettingsError as error:
         for problem in error.problems:
             print(f"error: {problem}", file=sys.stderr)

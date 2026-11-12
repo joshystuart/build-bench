@@ -101,7 +101,7 @@ def test_judge_measures_the_latest_results_folder_or_the_one_given(experiment, f
     assert cli("run", settings)[0] == 0
     first = results_folder(settings)
     assert cli("run", settings)[0] == 0
-    second = sorted((settings.parent / "results" / "demo").iterdir())[-1]
+    second = sorted((settings.parent / ".bench" / "results" / "demo").iterdir())[-1]
     assert first != second
 
     code, out, _ = cli("judge", settings)

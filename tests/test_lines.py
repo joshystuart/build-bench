@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 import pytest
-from conftest import results_folder
+from conftest import results_folder, workspace_home
 
 from build_bench import settings as settings_module
 from build_bench.lines import count_lines, criteria_ticked, matches
@@ -106,20 +106,17 @@ def test_checks_run_in_a_throwaway_copy(experiment, fake, cli):
     )
     assert cli("run", settings)[0] == 0
     trial = results_folder(settings) / "trials" / "alpha-1"
-    before = sorted(
-        p.relative_to(trial / "workspace").as_posix() for p in trial.rglob("workspace/**/*")
-    )
+    home = workspace_home(trial)
+    before = sorted(p.relative_to(home).as_posix() for p in home.rglob("*"))
     assert cli("judge", settings)[0] == 0
     measured = json.loads((trial / "measurements.json").read_text())
     assert measured["checks"]["ran"] is True
     assert measured["checks"]["passed"] is True
     assert measured["checks"]["exit_code"] == 0
     assert (trial / "checks.log").read_text() == "all good\n"
-    after = sorted(
-        p.relative_to(trial / "workspace").as_posix() for p in trial.rglob("workspace/**/*")
-    )
+    after = sorted(p.relative_to(home).as_posix() for p in home.rglob("*"))
     assert before == after
-    assert (trial / "workspace/repo/calc.py").exists()
+    assert (home / "repo/calc.py").exists()
     # The fake ticked one plan box.
     assert measured["criteria_ticked"] == 1
     assert measured["lines"]["prod_added"] == 2  # fake_committed.txt and fake_uncommitted.txt

@@ -12,7 +12,7 @@ In the Trial's workspace (a clone at the base commit, with no remote), with
 the environment cleaned as described under "Environment":
 
 ```sh
-CLAUDE_CONFIG_DIR=<trial>/workspace/config \
+CLAUDE_CONFIG_DIR=<workspaces>/<trial>/config \
 CLAUDE_CODE_OAUTH_TOKEN=<token> \
 claude -p \
   --output-format stream-json --verbose \
@@ -55,7 +55,7 @@ build-bench reads the first word. The init event also carries
 
 `CLAUDE_CONFIG_DIR` points Claude Code at a folder other than `~/.claude`.
 build-bench copies the Variant's `config` folder into a fresh
-`trials/<id>/workspace/config` for each Trial, or starts it empty.
+`<workspaces>/<id>/config` for each Trial, or starts it empty.
 
 With an empty folder and no login variable, the run stops at once:
 
@@ -129,14 +129,34 @@ list, same prompt and model:
 Skills and settings in the target repository's own `.claude/` folder still
 load: they are part of what is being built.
 
+### A Variant's skills, and skills named like a built-in
+
+A Variant's `skills` are copied into `<config>/skills/<name>/`, where Claude
+Code finds user skills. A skill with a built-in's name replaces the built-in.
+With Claude Code 2.1.319, a config folder holding `skills/code-review` (a
+`SKILL.md` describing a "PINEAPPLE review skill") and `skills/zz-mine` gave an
+init event listing `code-review` once, beside `zz-mine` ahead of the built-ins:
+
+```
+skills: ['code-review', 'zz-mine', 'deep-research', 'design', ..., 'debug', 'simplify', ...]
+```
+
+Without the copy, the same run listed `code-review` once, among the built-ins
+(`..., 'debug', 'code-review', 'simplify', ...`). The listing names the skill
+but not which one's text loads; no model call was made to confirm that.
+
 ### Instruction files above the workspace do load
 
 Claude Code reads `CLAUDE.md` files in every folder above its working folder.
 A Trial whose workspace sat below a folder holding a `CLAUDE.md` that said
 "reply with only the single word PINEAPPLE" answered `What is 2+2?` with
-`PINEAPPLE`. Trial workspaces live under the results folder, beside the
-settings file, so `run` warns about any `CLAUDE.md` or `CLAUDE.local.md` above
-it. Keep Experiments in a folder with none above it.
+`PINEAPPLE`. So Trial workspaces do not live in the results folder, which is
+usually inside the repository the Experiment is kept in: they go under
+`$XDG_CACHE_HOME/build-bench/workspaces/` (default `~/.cache`), where nothing
+above them belongs to a project. That also keeps Node's package lookup and
+tools that search upward for their config (prettier, tsconfig, vitest) from
+finding the outer repository's. `run` still warns about any `CLAUDE.md` or
+`CLAUDE.local.md` above the workspaces.
 
 ## Where the transcript lands
 

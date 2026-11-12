@@ -23,6 +23,14 @@ def git(repo: Path, *args: str) -> str:
     ).stdout
 
 
+@pytest.fixture(autouse=True)
+def cache_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Trial workspaces go under $XDG_CACHE_HOME; keep them in the test's own folder."""
+    cache = tmp_path / "cache"
+    monkeypatch.setenv("XDG_CACHE_HOME", str(cache))
+    return cache
+
+
 @pytest.fixture
 def target_repo(tmp_path: Path) -> Path:
     """A tiny repository with a plan that git ignores, as plans usually are."""
@@ -129,6 +137,12 @@ def cli(capsys: pytest.CaptureFixture):
 
 
 def results_folder(settings: Path) -> Path:
-    folders = sorted((settings.parent / "results").glob("*/*"))
+    folders = sorted((settings.parent / ".bench" / "results").glob("*/*"))
     assert folders, "no results folder"
     return folders[-1]
+
+
+def workspace_home(trial: Path) -> Path:
+    """Where a Trial's clone and config live: outside the results folder."""
+    experiment = json.loads((trial.parent.parent / "experiment.json").read_text())
+    return Path(experiment["workspaces"]) / trial.name

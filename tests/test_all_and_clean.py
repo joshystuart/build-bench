@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import litellm
 import pytest
-from conftest import results_folder
+from conftest import results_folder, workspace_home
 
 REPLY = (
     '```json\n{"scores": {"correctness": 7, "spec_completeness": 6, "code_quality": 8, '
@@ -42,7 +42,7 @@ def test_all_runs_judges_and_reports_into_one_folder(experiment, fake, cli, mode
     settings = experiment(variants=VARIANTS, judges=JUDGES, checks="true")
     code, out, _ = cli("all", settings)
     assert code == 0, out
-    [folder] = (settings.parent / "results" / "demo").iterdir()
+    [folder] = (settings.parent / ".bench" / "results" / "demo").iterdir()
     for trial in ("v1-1", "v1-2", "v2-1"):
         t = folder / "trials" / trial
         assert json.loads((t / "status.json").read_text())["status"] == "finished"
@@ -85,15 +85,16 @@ def test_clean_removes_workspaces_and_keeps_results(experiment, fake, cli, model
     assert cli("all", settings)[0] == 0
     folder = results_folder(settings)
     before = files(folder)
+    homes = [workspace_home(folder / "trials" / t) for t in ("v1-1", "v1-2", "v2-1")]
+    assert all((home / "repo").is_dir() for home in homes)
     code, out, _ = cli("clean", settings)
     assert code == 0
     assert f"Removed 3 workspace(s) from {folder}" in out
-    after = files(folder)
-    assert not any("/workspace/" in f for f in after)
-    assert after == {f for f in before if "/workspace/" not in f}
+    assert not homes[0].parent.exists()
+    assert files(folder) == before
     for kept in ("transcript/main.jsonl", "diff.patch", "measurements.json", "verdicts/api.json"):
-        assert f"trials/v1-1/{kept}" in after
-    assert "report.md" in after
+        assert f"trials/v1-1/{kept}" in before
+    assert "report.md" in before
 
     # Reports and API Judges still work from the saved files.
     (folder / "report.md").unlink()
