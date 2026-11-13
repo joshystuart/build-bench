@@ -294,7 +294,7 @@ def _call(fn, timeout: float | None, agent: ClaudeCode):
         if agent.stopped:
             raise JudgeFailed(STOPPED)
         thread.join(0.2)
-    if thread.is_alive():
+    if timeout is not None and thread.is_alive():
         raise TimeoutError(f"timeout: no reply after {timeout / 60:g} minutes")
     if "error" in box:
         raise box["error"]

@@ -56,7 +56,7 @@ def parse(diff: str) -> list[FileDiff]:
             old_path = line[4:].removeprefix("a/")
         elif not in_hunk and line.startswith("+++ "):
             new_path = line[4:].removeprefix("b/")
-            current.path = old_path if new_path == "/dev/null" else new_path
+            current.path = (old_path or current.path) if new_path == "/dev/null" else new_path
         elif line.startswith("Binary files "):
             current.binary = True
         elif line.startswith("@@"):

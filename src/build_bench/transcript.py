@@ -64,7 +64,7 @@ def messages(entries: list[dict]) -> dict[str, tuple[str, dict]]:
         usage = message.get("usage")
         if not isinstance(usage, dict) or message.get("model") == "<synthetic>":
             continue
-        key = message.get("id") or entry.get("uuid")
+        key = message.get("id") or entry.get("uuid") or ""
         found[key] = (message.get("model") or "unknown", usage)
     return found
 
@@ -212,7 +212,7 @@ def measure(transcript: Path, prices: dict[str, Price]) -> dict[str, Any]:
     main_tokens, main_cost, unpriced = tokens_and_cost(main_msgs, prices)
     agents = [{"agent": "main", "tokens": main_tokens, "cost_usd": main_cost}]
 
-    subagents = []
+    subagents: list[dict[str, Any]] = []
     sub_folder = transcript / "subagents"
     for path in sorted(sub_folder.glob("*.jsonl")) if sub_folder.is_dir() else []:
         entries = load_jsonl(path)
