@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 
 import yaml
-from conftest import API_KEY, OAUTH_TOKEN, git, results_folder, workspace_home
+from conftest import API_KEY, OAUTH_TOKEN, git, press_ctrl_c, results_folder, workspace_home
 
 # --- Settings ------------------------------------------------------------------
 
@@ -376,6 +376,55 @@ def test_a_trial_past_its_time_limit_is_stopped_and_failed(experiment, fake, cli
     assert status["status"] == "failed"
     assert status["reason"] == "timeout: stopped after 0.02 minutes"
     assert "[fail]  alpha-1 timeout" in out
+
+
+def test_ctrl_c_stops_the_agents_quietly_and_resume_finishes_the_rest(experiment, fake, cli):
+    fake.set(mode="hang")
+    settings = experiment(
+        concurrency=2,
+        variants=[{"name": "alpha", "prompt": "prompts/build.md", "model": "m", "repeats": 3}],
+    )
+    press_ctrl_c(lambda: len(fake.calls()) == 2)
+    started = time.time()
+
+    code, out, err = cli("run", settings)
+
+    # The hanging agents were stopped, not waited for.
+    assert time.time() - started < 15
+    assert code == 130
+    assert "Ctrl+C stops the run; `build-bench run --resume` finishes it later." in out
+    assert "Traceback" not in out + err and "KeyboardInterrupt" not in out + err
+    assert "`build-bench run --resume` finishes the Trials left.\nStopped." in err
+    trials = results_folder(settings) / "trials"
+    for trial in ("alpha-1", "alpha-2"):
+        status = json.loads((trials / trial / "status.json").read_text())
+        assert status["status"] == "failed"
+        assert status["reason"] == "stopped: build-bench was stopped (Ctrl+C)"
+        assert f"[fail]  {trial} stopped: build-bench was stopped (Ctrl+C)" in out
+    # The Trial still waiting never started.
+    assert not (trials / "alpha-3").exists()
+    assert len(fake.calls()) == 2
+
+    fake.set()
+    code, out, _ = cli("run", settings, "--resume")
+    assert code == 0, out
+    assert len(fake.calls()) == 5
+
+
+def test_a_second_ctrl_c_kills_an_agent_that_will_not_stop(experiment, fake, cli):
+    fake.set(mode="stubborn")
+    settings = experiment()
+    press_ctrl_c(lambda: len(fake.calls()) == 1, times=2)
+    started = time.time()
+
+    code, _, err = cli("run", settings)
+
+    # The agent ignores SIGTERM; without the second Ctrl+C this takes 10 seconds.
+    assert time.time() - started < 8
+    assert code == 130
+    assert "Traceback" not in err
+    status = json.loads((results_folder(settings) / "trials/alpha-1/status.json").read_text())
+    assert status["reason"] == "stopped: build-bench was stopped (Ctrl+C)"
 
 
 def test_a_trial_that_hits_its_budget_is_failed(experiment, fake, cli):

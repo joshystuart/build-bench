@@ -12,14 +12,14 @@ import tempfile
 import threading
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
 from importlib import resources
 from pathlib import Path
 from typing import Any
 
 from . import lines, transcript
-from .agent import AgentRequest, ClaudeCode
+from .agent import STOPPED, AgentRequest, ClaudeCode
 from .results import Trial, read_json, saved_trials, write_json
+from .run import in_parallel
 from .settings import DEFAULT_AUTH_ENV, Judge, Settings, path_rules
 
 SCORES = ("correctness", "spec_completeness", "code_quality", "test_quality", "honesty")
@@ -197,8 +197,7 @@ def run_judges(
                 say(f"[verdict failed] {trial.id} by {j.name}: {verdict['reason']}")
         return verdict
 
-    with ThreadPoolExecutor(max_workers=settings.concurrency) as pool:
-        list(pool.map(one, todo))
+    in_parallel(one, todo, settings.concurrency, agent, say)
 
     failed = [
         (j, t)
@@ -227,7 +226,7 @@ def judge_one(settings: Settings, folder: Path, j: Judge, trial: Trial, agent: C
     verdicts.mkdir(exist_ok=True)
     try:
         if j.type == "api":
-            reply, cost = _ask_api(settings, folder, j, trial, label)
+            reply, cost = _ask_api(settings, folder, j, trial, label, agent)
         else:
             reply, cost = _ask_agent(settings, folder, j, trial, label, agent)
         verdict["cost_usd"] = cost
@@ -277,8 +276,9 @@ def evidence(settings: Settings, folder: Path, trial: Trial, label: str) -> str:
     return "\n".join(parts)
 
 
-def _call(fn, timeout: float | None):
-    """Run ``fn`` and give up after ``timeout`` seconds, leaving it behind."""
+def _call(fn, timeout: float | None, agent: ClaudeCode):
+    """Run ``fn`` and give up after ``timeout`` seconds, or once build-bench is
+    stopped, leaving it behind."""
     box: dict[str, Any] = {}
 
     def target() -> None:
@@ -289,7 +289,11 @@ def _call(fn, timeout: float | None):
 
     thread = threading.Thread(target=target, daemon=True)
     thread.start()
-    thread.join(timeout)
+    give_up = time.time() + timeout if timeout else None
+    while thread.is_alive() and (give_up is None or time.time() < give_up):
+        if agent.stopped:
+            raise JudgeFailed(STOPPED)
+        thread.join(0.2)
     if thread.is_alive():
         raise TimeoutError(f"timeout: no reply after {timeout / 60:g} minutes")
     if "error" in box:
@@ -298,7 +302,7 @@ def _call(fn, timeout: float | None):
 
 
 def _ask_api(
-    settings: Settings, folder: Path, j: Judge, trial: Trial, label: str
+    settings: Settings, folder: Path, j: Judge, trial: Trial, label: str, agent: ClaudeCode
 ) -> tuple[str, float | None]:
     import litellm
 
@@ -315,7 +319,7 @@ def _ask_api(
         request["timeout"] = timeout
     if j.api_key_env:
         request["api_key"] = os.environ[j.api_key_env]
-    response = _call(lambda: litellm.completion(**request), timeout)
+    response = _call(lambda: litellm.completion(**request), timeout, agent)
     try:
         reply = response.choices[0].message.content or ""
     except (AttributeError, IndexError, KeyError, TypeError):

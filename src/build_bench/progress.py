@@ -287,9 +287,15 @@ def _limit(name: str, used: float, cap: float | None, show) -> str:
 
 
 def render(
-    settings: Settings, trials: list[Progress], started: float, now: float, height: int
+    settings: Settings,
+    trials: list[Progress],
+    started: float,
+    now: float,
+    height: int,
+    hint: str = "",
 ) -> list[Line]:
-    """The frame: the Experiment's bar, then each Trial's, in at most `height` lines."""
+    """The frame: the Experiment's bar, then each Trial's, in at most `height` lines.
+    A `hint` (how to stop) goes under the Experiment's bar."""
     estimate(trials)
     pad = max(len(p.trial.id) for p in trials) + 2
     count = {s: sum(p.state == s for p in trials) for s in ("finished", "running", "failed")}
@@ -304,6 +310,8 @@ def render(
         ),
         (" " * pad + time_left(trials, settings, now), "cyan"),
     ]
+    if hint and count["running"] + sum(p.state == "waiting" for p in trials):
+        head.append((" " * pad + hint, "dim"))
     running: list[Line] = []
     finished: list[Line] = []
     waiting = [p.trial.id for p in trials if p.state == "waiting"]
@@ -359,8 +367,10 @@ class Live:
         trials: list[Trial],
         redo: list[Trial],
         out: TextIO | None = None,
+        hint: str = "",
     ):
         self.settings = settings
+        self.hint = hint
         self.trials = trials
         self.started = time.time()
         self.reader = Reader(settings, {t.id for t in redo}, self.started)
@@ -407,7 +417,9 @@ class Live:
         now = time.time()
         try:
             progress = [self.reader.read(t) for t in self.trials]
-            lines = render(self.settings, progress, self.started, now, max(height - 1, 3))
+            lines = render(
+                self.settings, progress, self.started, now, max(height - 1, 3), self.hint
+            )
         except Exception:  # noqa: BLE001 - the display must never stop a run
             # Most often a file went away between two reads (a failed Trial
             # starting again); the next frame will find it.

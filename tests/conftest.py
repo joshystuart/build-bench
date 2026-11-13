@@ -1,7 +1,10 @@
+import _thread
 import json
 import os
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -146,3 +149,17 @@ def workspace_home(trial: Path) -> Path:
     """Where a Trial's clone and config live: outside the results folder."""
     experiment = json.loads((trial.parent.parent / "experiment.json").read_text())
     return Path(experiment["workspaces"]) / trial.name
+
+
+def press_ctrl_c(ready, times: int = 1, gap: float = 1.0) -> None:
+    """Once `ready()` holds, press Ctrl+C `times` times, `gap` seconds apart, as a
+    person at the terminal would: the command's main thread gets KeyboardInterrupt."""
+
+    def press() -> None:
+        while not ready():
+            time.sleep(0.05)
+        for _ in range(times):
+            _thread.interrupt_main()
+            time.sleep(gap)
+
+    threading.Thread(target=press, daemon=True).start()

@@ -93,6 +93,9 @@ def test_each_trial_shows_how_far_it_is_and_how_close_to_its_limits(
     final = last_frame(out)
     assert "2/2 done · 0 running · 0 failed" in final[0]
     assert final[1].strip() == "all Trials ended"
+    # How to stop shows while Trials run, not once they have all ended.
+    assert "         Ctrl+C stops the run; `build-bench run --resume` finishes it later." in out
+    assert not any("Ctrl+C" in line for line in final)
     assert any(line.startswith("alpha-2  [█") and "done in" in line for line in final)
 
 

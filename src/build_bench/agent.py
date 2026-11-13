@@ -11,6 +11,7 @@ import os
 import shutil
 import signal
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -44,10 +45,19 @@ class AgentResult:
     failure: str | None = None
 
 
+#: Why an agent ended when build-bench itself was stopped.
+STOPPED = "stopped: build-bench was stopped (Ctrl+C)"
+
+
 class Agent(Protocol):
     def version(self) -> str: ...
 
     def start(self, request: AgentRequest) -> AgentResult: ...
+
+    def stop(self, now: bool = False) -> None: ...
+
+    @property
+    def stopped(self) -> bool: ...
 
     def transcript(self, request: AgentRequest) -> tuple[Path | None, Path | None]: ...
 
@@ -66,6 +76,19 @@ def _scrubbed_environment() -> dict[str, str]:
 class ClaudeCode:
     def __init__(self, executable: str = "claude"):
         self.executable = executable
+        self._stopping = threading.Event()
+        self._hurry = threading.Event()
+
+    def stop(self, now: bool = False) -> None:
+        """Start no more agents and stop the running ones: politely, or with `now`
+        at once. Each `start` still returns, saying it was stopped."""
+        self._stopping.set()
+        if now:
+            self._hurry.set()
+
+    @property
+    def stopped(self) -> bool:
+        return self._stopping.is_set()
 
     def _path(self) -> str:
         found = shutil.which(self.executable)
@@ -116,7 +139,9 @@ class ClaudeCode:
 
     def start(self, request: AgentRequest) -> AgentResult:
         started = time.time()
-        timeout = request.timeout_minutes * 60 if request.timeout_minutes else None
+        if self.stopped:
+            return AgentResult(seconds=0, started_at=started, ended_at=started, failure=STOPPED)
+        deadline = started + request.timeout_minutes * 60 if request.timeout_minutes else None
         timed_out = False
         with request.stdout_path.open("wb") as out, request.stderr_path.open("wb") as err:
             process = subprocess.Popen(
@@ -134,19 +159,30 @@ class ClaudeCode:
                 process.stdin.close()
             except BrokenPipeError:
                 pass
-            try:
-                process.wait(timeout=timeout)
-            except subprocess.TimeoutExpired:
-                timed_out = True
-                _stop(process)
+            # The agent runs in its own session, so a Ctrl+C never reaches it;
+            # `stop` is how it is stopped instead.
+            while True:
+                try:
+                    process.wait(timeout=0.2)
+                    break
+                except subprocess.TimeoutExpired:
+                    pass
+                if self.stopped:
+                    _stop(process, self._hurry)
+                    break
+                if deadline is not None and time.time() >= deadline:
+                    timed_out = True
+                    _stop(process, self._hurry)
+                    break
         ended = time.time()
         result = _last_result(request.stdout_path)
+        failure = _failure(process.returncode, timed_out, request, result)
         return AgentResult(
             seconds=ended - started,
             started_at=started,
             ended_at=ended,
             result=result,
-            failure=_failure(process.returncode, timed_out, request, result),
+            failure=STOPPED if failure and self.stopped else failure,
         )
 
     def transcript(self, request: AgentRequest) -> tuple[Path | None, Path | None]:
@@ -157,17 +193,21 @@ class ClaudeCode:
         return None, None
 
 
-def _stop(process: subprocess.Popen) -> None:
-    for sig, wait in ((signal.SIGTERM, 10), (signal.SIGKILL, 10)):
+def _stop(process: subprocess.Popen, hurry: threading.Event) -> None:
+    """Ask the agent's process group to end; kill it after 10 seconds, or as soon
+    as `hurry` is set."""
+    for sig in (signal.SIGTERM, signal.SIGKILL):
         try:
             os.killpg(process.pid, sig)
         except ProcessLookupError:
             return
-        try:
-            process.wait(timeout=wait)
-            return
-        except subprocess.TimeoutExpired:
-            continue
+        give_up = time.time() + 10
+        while time.time() < give_up and (sig == signal.SIGKILL or not hurry.is_set()):
+            try:
+                process.wait(timeout=0.2)
+                return
+            except subprocess.TimeoutExpired:
+                continue
 
 
 def _last_result(stdout_path: Path) -> dict | None:

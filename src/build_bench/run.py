@@ -10,13 +10,13 @@ import tempfile
 import threading
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait
 from contextlib import nullcontext
 from pathlib import Path
 
 import yaml
 
-from .agent import Agent, AgentRequest, ClaudeCode
+from .agent import STOPPED, Agent, AgentRequest, ClaudeCode
 from .progress import Live
 from .results import (
     Trial,
@@ -35,9 +35,51 @@ They run commands on this machine, as you, in your real home folder, without
 asking. Each Trial works in its own clone with no git remote, but nothing else
 is sandboxed. Only run Experiments whose prompts, plans and repositories you trust."""
 
+#: How to stop a run, shown while Trials run.
+HOW_TO_STOP = "Ctrl+C stops the run; `build-bench run --resume` finishes it later."
+
 
 class RunError(Exception):
     pass
+
+
+def in_parallel(work, items: list, concurrency: int, agent: Agent, say) -> None:
+    """Call `work` on each item, `concurrency` at a time.
+
+    On Ctrl+C no more items start, the running agents are stopped, and each
+    `work` call still returns and saves why it ended; then KeyboardInterrupt
+    is raised again. Another Ctrl+C while waiting kills the agents at once.
+    """
+    pool = ThreadPoolExecutor(max_workers=concurrency)
+    futures = [pool.submit(work, item) for item in items]
+    try:
+        _wait(futures)
+    except KeyboardInterrupt:
+        for future in futures:
+            future.cancel()
+        agent.stop()
+        told = False
+        while True:
+            try:
+                if not told:
+                    told = True
+                    say("Stopping: waiting for the agents to end (Ctrl+C again to kill them now)…")
+                _wait(futures)
+                break
+            except KeyboardInterrupt:
+                agent.stop(now=True)
+        pool.shutdown()
+        raise
+    pool.shutdown()
+    for future in futures:
+        future.result()
+
+
+def _wait(futures: list) -> None:
+    # In short waits, not one long one: a Ctrl+C cannot interrupt a thread
+    # blocked on a lock everywhere, but it is seen between two waits.
+    while wait(futures, timeout=0.2).not_done:
+        pass
 
 
 def preflight(settings: Settings, agent: Agent) -> str:
@@ -146,9 +188,11 @@ def run(
         say(f"Skipping {skipped} finished Trial(s).")
 
     lock = threading.Lock()
-    display = Live(settings, planned, todo) if live and todo else None
+    display = Live(settings, planned, todo, hint=HOW_TO_STOP) if live and todo else None
     # With the display on, lines print above it instead of through it.
     tell = display.say if display else say
+    if todo and not display:
+        say(HOW_TO_STOP)
 
     def one(trial: Trial) -> None:
         with lock:
@@ -161,8 +205,7 @@ def run(
                 tell(f"[fail]  {trial.id} {status['reason']}")
 
     with display or nullcontext():
-        with ThreadPoolExecutor(max_workers=settings.concurrency) as pool:
-            list(pool.map(one, todo))
+        in_parallel(one, todo, settings.concurrency, agent, tell)
 
     record_overlap(folder)
     return [t for t in planned_trials(settings, folder) if not t.finished]
@@ -197,6 +240,10 @@ def build_trial(
         status.update(_build(settings, folder, trial, agent, secret))
     except Exception as error:  # noqa: BLE001 - any surprise fails this Trial only
         status.update(status="failed", reason=f"crashed: {type(error).__name__}: {error}")
+    if status["status"] != "finished" and agent.stopped:
+        # Whatever broke (a pre_build step or git also got the Ctrl+C), the
+        # stop is why; the Trial runs again on resume.
+        status.update(status="failed", reason=STOPPED)
     _redact(trial.folder, secret)
     write_json(trial.folder / "status.json", status)
     return status
@@ -224,6 +271,8 @@ def _build(settings: Settings, folder: Path, trial: Trial, agent: Agent, secret:
     pre_build_seconds = 0.0
     with (trial.folder / "pre_build.log").open("w") as log:
         for step in settings.pre_build:
+            if agent.stopped:
+                return {"status": "failed", "reason": STOPPED}
             log.write(f"$ {step}\n")
             log.flush()
             started = time.time()

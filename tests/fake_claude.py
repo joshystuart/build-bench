@@ -2,7 +2,7 @@
 
 Control keys (all optional):
     version       what `--version` reports
-    mode          ok | crash | hang | budget | fail_once
+    mode          ok | crash | hang | stubborn (hang, ignoring SIGTERM) | budget | fail_once
     per_cwd       {substring of the working folder: mode}
     sleep         seconds to wait before answering
     events        stream events a build writes before it waits (to watch it mid-run)
@@ -16,6 +16,7 @@ Every call is recorded as one JSON file in $FAKE_CLAUDE_LOG.
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -101,7 +102,9 @@ def main() -> int:
         _tick_plan(cwd)
         for event in control.get("events", []):
             print(json.dumps(event), flush=True)
-    if mode == "hang":
+    if mode == "stubborn":
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    if mode in ("hang", "stubborn"):
         time.sleep(600)
     time.sleep(control.get("sleep", 0))
 
