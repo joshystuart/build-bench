@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import litellm
 import pytest
-from conftest import results_folder, workspace_home
+from conftest import press_ctrl_c, results_folder, workspace_home
 
 GOOD = """## 1. Summary
 Looks fine.
@@ -344,6 +344,36 @@ def test_agent_judge_limits_and_resume(experiment, fake, cli):
     assert len(fake.calls(judge=True)) == 4
     assert cli("judge", settings)[0] == 0
     assert len(fake.calls(judge=True)) == 4
+
+
+def test_ctrl_c_stops_an_api_judge_quietly(experiment, fake, cli, stub):
+    settings = built(experiment, cli, judges=[api_judge()])
+    stub.sleep = 600
+    press_ctrl_c(lambda: stub.requests)
+    started = time.time()
+
+    code, out, err = cli("judge", settings)
+
+    assert time.time() - started < 15
+    assert code == 130
+    assert "Traceback" not in out + err and err.strip() == "Stopped."
+    saved = verdict(settings, "secretvariant-1", "diff-only")
+    assert saved["reason"] == "stopped: build-bench was stopped (Ctrl+C)"
+
+
+def test_ctrl_c_stops_an_agent_judge_quietly(experiment, fake, cli):
+    settings = built(experiment, cli, judges=[agent_judge()])
+    fake.set(judge_mode="hang")
+    press_ctrl_c(lambda: len(fake.calls(judge=True)) == 1)
+    started = time.time()
+
+    code, out, err = cli("judge", settings)
+
+    assert time.time() - started < 15
+    assert code == 130
+    assert "Traceback" not in out + err and "Stopped." in err
+    saved = verdict(settings, "secretvariant-1", "blind-agent")
+    assert saved["reason"] == "stopped: build-bench was stopped (Ctrl+C)"
 
 
 def test_agent_judge_reports_a_removed_workspace(experiment, fake, cli):

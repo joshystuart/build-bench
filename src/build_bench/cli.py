@@ -9,8 +9,9 @@ from pathlib import Path
 from . import settings as settings_module
 from .results import ResultsError, new_folder, pick_folder
 
-#: Exit codes: 0 all good, 1 a Trial or Verdict failed, 2 nothing could start.
-OK, FAILED, UNUSABLE = 0, 1, 2
+#: Exit codes: 0 all good, 1 a Trial or Verdict failed, 2 nothing could start,
+#: 130 stopped with Ctrl+C.
+OK, FAILED, UNUSABLE, STOPPED = 0, 1, 2, 130
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -61,6 +62,10 @@ def main(argv: list[str] | None = None) -> int:
     except (ResultsError, _Unusable) as error:
         print(f"error: {error}", file=sys.stderr)
         return UNUSABLE
+    except KeyboardInterrupt:
+        # Ctrl+C is how a person stops a command: say so, without a traceback.
+        print("Stopped.", file=sys.stderr)
+        return STOPPED
 
 
 class _Unusable(Exception):
@@ -89,6 +94,9 @@ def _run(settings, args, folder: Path | None = None) -> int:
         failed = run(settings, folder, live=sys.stdout.isatty())
     except RunError as error:
         raise _Unusable(str(error)) from None
+    except KeyboardInterrupt:
+        print("\n`build-bench run --resume` finishes the Trials left.", file=sys.stderr)
+        raise
     return FAILED if failed else OK
 
 
