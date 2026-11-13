@@ -61,6 +61,8 @@ def trial_row(trial, judges: list[str]) -> dict[str, Any]:
         "test_removed": line_counts.get("test_removed"),
         "checks_passed": (1.0 if checks.get("passed") else 0.0) if checks.get("ran") else None,
         "criteria_ticked": m.get("criteria_ticked") if m else None,
+        "final_message": _text(trial.folder / "summary.md"),
+        "changed_nothing": _changed_nothing(trial.folder),
         "scores": {},
         "verdicts": {},
     }
@@ -87,18 +89,39 @@ def trial_row(trial, judges: list[str]) -> dict[str, Any]:
     return row
 
 
+def _text(path: Path) -> str | None:
+    try:
+        return path.read_text(errors="replace").strip() or None
+    except FileNotFoundError:
+        return None
+
+
+def _changed_nothing(folder: Path) -> bool:
+    """The build left no code changes: its diff was saved, and is empty."""
+    diff = folder / "diff.patch"
+    return diff.is_file() and not diff.read_text(errors="replace").strip()
+
+
 def _timeline(m: dict) -> dict | None:
     if "total_seconds" not in m:
         return None
+    main = next((a for a in m.get("by_agent", []) if a.get("agent") == "main"), {})
     return {
         "total_seconds": m["total_seconds"],
+        "main_cost_usd": main.get("cost_usd"),
         "waits": m.get("wait_intervals", []),
         "subagents": [
-            {"name": s["name"], "start": s["start"], "end": s["end"]}
+            {"name": s["name"], "start": s["start"], "end": s["end"], "cost_usd": s.get("cost_usd")}
             for s in m.get("subagents", [])
             if s.get("start") is not None
         ],
     }
+
+
+def first_paragraph(text: str, limit: int = 400) -> str:
+    """The opening paragraph of an agent's final message, on one line."""
+    para = " ".join(text.strip().split("\n\n", 1)[0].split())
+    return para if len(para) <= limit else para[: limit - 1].rstrip() + "…"
 
 
 def aggregate(values: list[float | int | None], decimals: int) -> dict:
@@ -181,7 +204,14 @@ def build_report(settings: Settings, folder: Path) -> dict:
         "variants": variants,
         "judges": judge_rows,
         "failed_trials": [
-            {"trial": r["trial"], "reason": r["reason"]} for r in rows if r["status"] != "finished"
+            {"trial": r["trial"], "reason": r["reason"], "final_message": r["final_message"]}
+            for r in rows
+            if r["status"] != "finished"
+        ],
+        "empty_trials": [
+            {"trial": r["trial"], "final_message": r["final_message"]}
+            for r in rows
+            if r["status"] == "finished" and r["changed_nothing"]
         ],
         "failed_verdicts": [
             {"trial": r["trial"], "judge": j, "reason": v["reason"]}
@@ -282,7 +312,26 @@ def markdown(data: dict) -> str:
         out.append("")
     if data["failed_trials"]:
         out += ["## Failed Trials", ""]
-        out += [f"- {f['trial']}: {f['reason']}" for f in data["failed_trials"]] + [""]
+        for f in data["failed_trials"]:
+            out.append(f"- {f['trial']}: {f['reason']}")
+            if f["final_message"]:
+                out.append(f"  - The agent's last words: “{first_paragraph(f['final_message'])}”")
+        out.append("")
+    if data["empty_trials"]:
+        out += [
+            "## Trials that changed nothing",
+            "",
+            "These Trials finished but left no code changes. Their numbers are in the averages.",
+            "",
+        ]
+        for f in data["empty_trials"]:
+            words = f["final_message"]
+            out.append(
+                f"- {f['trial']}: “{first_paragraph(words)}”"
+                if words
+                else f"- {f['trial']}: the agent wrote no final message."
+            )
+        out.append("")
     if data["failed_verdicts"]:
         out += ["## Failed Verdicts", ""]
         out += [f"- {f['trial']} by {f['judge']}: {f['reason']}" for f in data["failed_verdicts"]]
