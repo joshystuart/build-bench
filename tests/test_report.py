@@ -257,7 +257,6 @@ def test_the_report_says_why_a_trial_went_wrong(experiment, cli, no_models):
     # The whole message is one click away, escaped.
     assert "add a remote &amp; run it again." in problems
     assert "changed nothing</text>" in page  # flagged in the timeline too
-    assert page.count("· failed") == 1
 
 
 def test_judge_cost_and_time_are_apart_from_the_build(saved, cli, no_models):

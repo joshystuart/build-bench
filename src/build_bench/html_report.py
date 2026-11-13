@@ -245,9 +245,7 @@ def _timelines(rows: list[dict]) -> str:
         subs = t["subagents"]
         note = f"{_clock(t['total_seconds'])} · {len(subs)} subagent{'s' * (len(subs) != 1)}"
         bad = ""
-        if r["status"] != "finished":
-            note, bad = note + " · failed", " bad"
-        elif r.get("changed_nothing"):
+        if r.get("changed_nothing"):
             note, bad = note + " · changed nothing", " bad"
         body.append(
             f"<g class='trial' role='group' aria-label='Timeline of {trial}'>"
@@ -258,7 +256,7 @@ def _timelines(rows: list[dict]) -> str:
         y += group_h
 
         total, waits = t["total_seconds"], t["waits"]
-        waited = sum(e - s for s, e in waits)
+        waited = total - sum(e - s for s, e in _working(total, waits))
         tip = [f"{_clock(total)} in all", f"Main agent · {r['trial']}"]
         if subs:
             share = round(100 * waited / total) if total else 0
