@@ -370,6 +370,27 @@ def test_json_holds_every_number_in_the_markdown(saved, cli, no_models):
     assert numbers > 50
 
 
+def test_html_escapes_what_the_agent_wrote(experiment, cli, no_models):
+    """An agent's words are shown as text, never run as markup."""
+    settings = experiment()
+    folder = settings.parent / ".bench" / "results" / "demo" / "20260101-000000"
+    write(folder / "experiment.json", {"name": "demo"})
+    trial(
+        folder,
+        "alpha-1",
+        status="failed",
+        reason="crashed: <img src=x onerror='alert(1)'>",
+        summary="Done. <script>alert('hi')</script>",
+    )
+    trial(folder, "alpha-2")
+    assert cli("report", settings)[0] == 0
+
+    page = (folder / "report.html").read_text()
+    assert "<script>alert" not in page and "<img" not in page
+    assert "&lt;script&gt;alert(&#39;hi&#39;)&lt;/script&gt;" in page
+    assert "onerror=&#39;alert(1)&#39;&gt;" in page
+
+
 def test_html_shows_the_same_numbers_as_the_markdown(saved, cli, no_models):
     settings, folder = saved
     cli("report", settings)
@@ -391,7 +412,7 @@ def test_html_is_self_contained_with_shared_scale_timelines(saved, cli, no_model
     assert len(svgs) == 1
     assert page.count("<summary>Show as table</summary>") == 1
     groups = dict(
-        re.findall(r"aria-label='Timeline of ([\w-]+)'>(.*?)</g></g>", svgs[0], flags=re.S)
+        re.findall(r"aria-label='Timeline of ([\w-]+)'>(.*?)</g>\s*</g>", svgs[0], flags=re.S)
     )
     assert sorted(groups) == ["v1-1", "v1-2", "v2-1", "v2-2"]
 
