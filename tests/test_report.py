@@ -34,6 +34,8 @@ def trial(
     checks=True,
     ticked=2,
     verdicts=None,
+    summary=None,
+    diff="+changed\n",
 ):
     variant, repeat = name.rsplit("-", 1)
     t = folder / "trials" / name
@@ -49,6 +51,8 @@ def trial(
         },
     )
     write(t / "timings.json", {"max_active": active})
+    if summary is not None:
+        write(t / "summary.md", summary)
     if status != "finished":
         return
     write(
@@ -69,6 +73,8 @@ def trial(
             "criteria_ticked": ticked,
         },
     )
+    if diff is not None:
+        write(t / "diff.patch", diff)
     for judge, v in (verdicts or {}).items():
         write(t / "verdicts" / f"{judge}.json", {"judge": judge, **v})
 
@@ -203,7 +209,55 @@ def test_failures_are_listed_and_left_out(saved, cli, no_models):
     assert "## Failed Trials\n\n- v1-3: crashed: exit code 3" in md
     assert "## Failed Verdicts\n\n- v2-1 by j: missing score honesty" in md
     data = json.loads((folder / "report.json").read_text())
-    assert data["failed_trials"] == [{"trial": "v1-3", "reason": "crashed: exit code 3"}]
+    assert data["failed_trials"] == [
+        {"trial": "v1-3", "reason": "crashed: exit code 3", "final_message": None}
+    ]
+    assert data["empty_trials"] == []
+    assert "## Trials that changed nothing" not in md
+    assert "What went wrong" in (folder / "report.html").read_text()
+
+
+def test_the_report_says_why_a_trial_went_wrong(experiment, cli, no_models):
+    """A failed Trial and a Trial that built nothing both show the agent's own last words."""
+    settings = experiment()
+    folder = settings.parent / ".bench" / "results" / "demo" / "20260101-000000"
+    write(folder / "experiment.json", {"name": "demo"})
+    stopped = (
+        "I stopped the build before it started. The repository has no git remote.\n\n"
+        "**To continue:** add a remote & run it again."
+    )
+    trial(folder, "alpha-1", diff="", summary=stopped)
+    trial(
+        folder,
+        "alpha-2",
+        status="failed",
+        reason="budget: reached the spending limit of $5",
+        summary="Ran out of budget while writing tests.",
+    )
+    trial(folder, "alpha-3")
+    assert cli("report", settings)[0] == 0
+
+    md = (folder / "report.md").read_text()
+    assert (
+        "- alpha-2: budget: reached the spending limit of $5\n"
+        "  - The agent's last words: “Ran out of budget while writing tests.”"
+    ) in md
+    assert (
+        "## Trials that changed nothing\n\n"
+        "These Trials finished but left no code changes. Their numbers are in the averages.\n\n"
+        "- alpha-1: “I stopped the build before it started. The repository has no git remote.”"
+    ) in md
+    assert "alpha-3" not in md.split("## Trials that changed nothing")[1]
+
+    page = (folder / "report.html").read_text()
+    problems = page.split("<h2>What went wrong</h2>")[1].split("</ul>")[0]
+    assert problems.count("<li>") == 2
+    assert "Failed: budget: reached the spending limit of $5" in problems
+    assert "Finished but left no code changes" in problems
+    # The whole message is one click away, escaped.
+    assert "add a remote &amp; run it again." in problems
+    assert "changed nothing</text>" in page  # flagged in the timeline too
+    assert page.count("· failed") == 1
 
 
 def test_judge_cost_and_time_are_apart_from_the_build(saved, cli, no_models):
@@ -332,24 +386,30 @@ def test_html_is_self_contained_with_shared_scale_timelines(saved, cli, no_model
     page = (folder / "report.html").read_text()
     assert not re.search(r"""(src|href)=['"]?(https?:)?//""", page)
     assert "<link" not in page and "@import" not in page
-    # One timeline per finished Trial: a subagent Trial and single-agent Trials.
+    # One chart for every finished Trial, grouped by Trial, on one time scale.
     svgs = re.findall(r"<svg .*?</svg>", page, flags=re.S)
-    assert len(svgs) == 4
-    assert page.count("<summary>Show as table</summary>") == 4
-    widths = {
-        label: float(w)
-        for label, w in re.findall(
-            r"aria-label='Timeline of ([\w-]+)'>.*?class='bar main'.*?width='([\d.]+)'",
-            page,
-            flags=re.S,
-        )
-    }
-    # v1-2 ran for 20 minutes, the longest, and fills the scale; v1-1 ran 10.
-    assert widths["v1-2"] == pytest.approx(790.0)
-    assert widths["v1-1"] == pytest.approx(395.0)
-    assert widths["v2-2"] == pytest.approx(197.5)
-    v1_1 = svgs[[i for i, s in enumerate(svgs) if "Timeline of v1-1" in s][0]]
-    assert "class='bar sub'" in v1_1 and "class='bar wait'" in v1_1
-    assert "class='bar sub'" not in svgs[[i for i, s in enumerate(svgs) if "v2-2" in s][0]]
-    assert page.count("tabindex='0'") == 4 + 2  # four main bars, one subagent, one wait
+    assert len(svgs) == 1
+    assert page.count("<summary>Show as table</summary>") == 1
+    groups = dict(
+        re.findall(r"aria-label='Timeline of ([\w-]+)'>(.*?)</g></g>", svgs[0], flags=re.S)
+    )
+    assert sorted(groups) == ["v1-1", "v1-2", "v2-1", "v2-2"]
+
+    def main_end(group: str) -> float:
+        bars = re.findall(r"class='mark main' x='([\d.]+)' y='[\d.]+' width='([\d.]+)'", group)
+        return max(float(x) + float(w) for x, w in bars)
+
+    zero = float(re.search(r"<line class='axis' x1='([\d.]+)'", svgs[0]).group(1))
+    # v1-2 ran for 20 minutes, the longest, and fills the scale; v1-1 ran 10, v2-2 five.
+    full = main_end(groups["v1-2"]) - zero
+    assert main_end(groups["v1-1"]) - zero == pytest.approx(full / 2, abs=0.2)
+    assert main_end(groups["v2-2"]) - zero == pytest.approx(full / 4, abs=0.2)
+    # v1-1's main agent waited from 100 s to 160 s: two working bars around a wait line.
+    v1_1 = groups["v1-1"]
+    assert v1_1.count("class='mark main'") == 2 and v1_1.count("class='wait-track'") == 1
+    assert v1_1.count("class='mark sub'") == 1 and ">explore<" in v1_1
+    assert "class='mark sub'" not in groups["v2-2"] and "wait-track" not in groups["v2-2"]
+    assert "10m 00s · 1 subagent<" in v1_1
+    assert page.count("tabindex='0'") == 4 + 1  # four main agents, one subagent
+    assert "data-tip='1m 00s\nexplore · v1-1\n" in page  # tooltip lines, longest first
     assert "prefers-color-scheme: dark" in page and "max-width: 600px" in page
