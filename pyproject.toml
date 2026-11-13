@@ -16,7 +16,7 @@ dependencies = [
 build-bench = "build_bench.cli:main"
 
 [dependency-groups]
-dev = ["pytest>=8.3", "ruff>=0.7"]
+dev = ["mypy>=1.13", "pytest>=8.3", "ruff>=0.7", "types-pyyaml>=6.0"]
 
 [build-system]
 requires = ["hatchling"]
@@ -31,6 +31,9 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]
+
+[tool.mypy]
+files = ["src", "tests"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

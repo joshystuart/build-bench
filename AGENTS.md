@@ -6,10 +6,10 @@ Experiment, Variant, Trial, Judge and Verdict mean what
 
 ## Checks
 
-One command runs every check (lint, format and tests):
+One command runs every check (lint, format, types and tests):
 
 ```sh
-uv run sh -c 'ruff check . && ruff format --check . && pytest -q'
+uv run sh -c 'ruff check . && ruff format --check . && mypy && pytest -q'
 ```
 
 It must pass before a change is done. CI runs the same command.

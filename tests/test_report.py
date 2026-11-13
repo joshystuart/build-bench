@@ -305,7 +305,8 @@ def test_one_version_and_api_key_are_not_flagged(experiment, cli, no_models):
 
 
 def md_tables(md: str) -> list[list[list[str]]]:
-    tables, current = [], None
+    tables: list[list[list[str]]] = []
+    current: list[list[str]] | None = None
     for line in md.splitlines():
         if line.startswith("|") and not line.startswith("|---"):
             if current is None:

@@ -105,7 +105,7 @@ def _changed_nothing(folder: Path) -> bool:
 def _timeline(m: dict) -> dict | None:
     if "total_seconds" not in m:
         return None
-    main = next((a for a in m.get("by_agent", []) if a.get("agent") == "main"), {})
+    main: dict = next((a for a in m.get("by_agent", []) if a.get("agent") == "main"), {})
     return {
         "total_seconds": m["total_seconds"],
         "main_cost_usd": main.get("cost_usd"),

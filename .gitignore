@@ -3,3 +3,4 @@ reference/
 results/
 .venv/
 __pycache__/
+dist/

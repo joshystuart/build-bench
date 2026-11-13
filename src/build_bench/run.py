@@ -260,7 +260,7 @@ def _build(settings: Settings, folder: Path, trial: Trial, agent: Agent, secret:
         config.mkdir(parents=True)
     if (folder / "skills" / variant.name).is_dir():
         skills = config / "skills"
-        if skills.is_symlink():
+        if variant.config is not None and skills.is_symlink():
             # Copy what the link points at, so the Variant's skills never land in it.
             # Resolved from the original config, where a relative link still works.
             target = (variant.config / "skills").resolve()

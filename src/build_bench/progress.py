@@ -26,6 +26,7 @@ import statistics
 import sys
 import threading
 import time
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TextIO
@@ -149,7 +150,9 @@ def checkboxes(folder: Path) -> tuple[int, int] | None:
 class Reader:
     """Reads each Trial's progress, parsing a stream again only when it has grown."""
 
-    def __init__(self, settings: Settings, redo: set[str] = frozenset(), since: float = 0.0):
+    def __init__(
+        self, settings: Settings, redo: AbstractSet[str] = frozenset(), since: float = 0.0
+    ):
         self.settings = settings
         self.prices = {**default_prices(), **settings.prices}
         #: Trials this run builds again: until they start, an older status is stale.
