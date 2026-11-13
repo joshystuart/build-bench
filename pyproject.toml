@@ -38,3 +38,5 @@ testpaths = ["tests"]
 [tool.ruff.lint.per-file-ignores]
 # Fixture strings and expected output read better on one line.
 "tests/**" = ["E501"]
+# PROTOTYPE, throwaway: remove with src/build_bench/progress_prototype.py.
+"src/build_bench/progress_prototype.py" = ["E501"]
