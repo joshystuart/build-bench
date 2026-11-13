@@ -76,6 +76,7 @@ def test_one_trial_end_to_end(experiment, fake, cli, target_repo):
     assert code == 0, out
     assert out.index("WARNING: build-bench starts coding agents") < out.index("[start] alpha-1")
     assert "[done]  alpha-1 finished in" in out
+    assert "\x1b[" not in out  # not a terminal, so no live display
     folder = results_folder(settings)
     trial = folder / "trials" / "alpha-1"
 

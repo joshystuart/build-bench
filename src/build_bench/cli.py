@@ -86,7 +86,7 @@ def _run(settings, args, folder: Path | None = None) -> int:
             folder = new_folder(settings)
     print(f"Results: {folder}")
     try:
-        failed = run(settings, folder)
+        failed = run(settings, folder, live=sys.stdout.isatty())
     except RunError as error:
         raise _Unusable(str(error)) from None
     return FAILED if failed else OK

@@ -56,6 +56,26 @@ settings, a missing key, a Claude Code version that does not match the pin).
 [fail]  sonnet-subagents-2 timeout: stopped after 120 minutes
 ```
 
+In a terminal, `run` also keeps a display below those lines, redrawn every
+second until the last Trial ends:
+
+```
+Experiment     [██████████████░░░░░░░░░░░░░░░░]  1/4 done · 2 running · 0 failed · 31m12s elapsed
+               time left: ~38m10s (from 1 finished Trial(s))
+opus-single-2  [██████████░░░░░░░░░░░░░░░░░░░░]  33%  todo list 2/6
+               time [██░░░░░░░░] 24m02s/120m00s   cost [███░░░░░░░] $11.90/$40.00
+               now: Bash Run the tests · 12s ago
+               waiting: sonnet-subagents-1 sonnet-subagents-2
+```
+
+How far a Trial has got is the best signal there is, named beside its bar:
+the agent's own todo list, else the boxes ticked in the plan inside its
+workspace, else its tool calls against those of finished Trials. Time left
+comes from how long finished Trials took; until one finishes, only the most
+the timeout allows is shown. A Trial with no news for three minutes is shown
+as quiet. When the output is not a terminal (a pipe, CI) only the lines are
+printed; `NO_COLOR` turns colour off.
+
 A failed Trial is recorded with its reason and never retried on its own.
 Running `run --resume` runs it again from nothing.
 
