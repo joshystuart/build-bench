@@ -25,7 +25,8 @@ It must pass before a change is done. CI runs the same command.
   files the Trials write.
 - `transcript.py`, `lines.py` — measurements from transcripts and diffs.
 - `judge.py` — `judge`: measurements, checks, API and Agent Judges, Verdicts.
-- `report.py`, `html_report.py` — `report`.
+- `report.py`, `html_report.py` — `report`; the HTML page's markup, styles and script
+  are in `templates/` (Jinja, autoescaped).
 - `presets/*.yaml`, `prices.yaml`, `prompts/judge.md` — data, not code.
 
 ## Tests

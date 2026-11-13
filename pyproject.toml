@@ -6,6 +6,7 @@ readme = "README.md"
 license = "MIT"
 requires-python = ">=3.12"
 dependencies = [
+    "jinja2>=3.1,<4",
     "pydantic>=2.9,<3",
     "pyyaml>=6.0,<7",
     # Pinned exactly: litellm 1.82.7 and 1.82.8 on PyPI were malicious (March 2026).

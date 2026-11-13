@@ -1,0 +1,123 @@
+{#- report.html: rendered by html_report.py with autoescape on. Every value is escaped
+    unless html_report.py marked it as Markup. The layout numbers come from Python. -#}
+{% macro table(t) %}
+<div class='scroll'><table>
+<thead><tr>{% for label in t.head %}<th scope='col'>{{ label }}</th>{% endfor %}</tr></thead>
+<tbody>
+{% for row in t.rows %}
+<tr><th scope='row'>{{ row[0] }}</th>{% for value in row[1:] %}<td>{{ value }}</td>{% endfor %}</tr>
+{% endfor %}
+</tbody>
+</table></div>
+{% endmacro %}
+<!doctype html>
+<html lang='en'>
+<head>
+<meta charset='utf-8'>
+<meta name='viewport' content='width=device-width, initial-scale=1'>
+<title>{{ experiment }} report</title>
+<style>
+{{ css }}</style>
+</head>
+<body>
+<main>
+<button class='theme' id='theme' type='button'>Switch theme</button>
+<h1>{{ experiment }}</h1>
+<ul>
+{% for line in flags %}
+<li>{{ line }}</li>
+{% endfor %}
+</ul>
+{% if problems %}
+<h2>What went wrong</h2>
+<ul class='problems'>
+{% for p in problems %}
+<li><strong>{{ p.trial }}</strong> <span class='muted'>· {{ p.what }}</span>
+<p class='why'>{{ p.why }}</p>
+{% if p.quote is not none %}
+<blockquote>“{{ p.quote }}”</blockquote>
+{% if p.whole is not none %}
+<details><summary>The agent's whole final message</summary><pre>{{ p.whole }}</pre></details>
+{% endif %}
+{% else %}
+<p class='why muted'>The agent wrote no final message.</p>
+{% endif %}
+</li>
+{% endfor %}
+</ul>
+{% endif %}
+{% for s in sections %}
+<h2>{{ s.title }}</h2>
+{% if s.note %}
+<p class='muted'>{{ s.note }}</p>
+{% endif %}
+{{ table(s.table) }}
+{% endfor %}
+{% if timeline %}
+{% set t = timeline %}
+<h2>Timelines</h2>
+<figure class='chart'>
+<p class='chart-title'>Which agent was running, minute by minute</p>
+<p class='chart-sub'>Each bar is one agent, from its first message to its last. Every Trial uses
+the same time scale. Hover or tab to a row to read it.</p>
+<ul class='legend' aria-label='Legend'>
+<li><span class='sw main'></span>Main agent working</li>
+<li><span class='lk'></span>Main agent waiting on subagents</li>
+<li><span class='sw sub'></span>Subagent</li>
+</ul>
+<div class='scroll'><svg class='timeline' viewBox='0 0 1000 {{ t.bottom + 40 }}' role='group'
+ aria-label='Timeline of every agent in every Trial'>
+{% for tick in t.ticks %}
+<line class='{{ "axis" if tick.axis else "grid" }}' x1='{{ tick.x|px }}' x2='{{ tick.x|px }}'
+ y1='{{ t.top }}' y2='{{ t.bottom }}'/>
+<text class='tick' x='{{ tick.x|px }}' y='{{ t.bottom + 16 }}' text-anchor='middle'>{{ tick.label }}</text>
+{% endfor %}
+<text class='tick' x='{{ t.right }}' y='{{ t.bottom + 34 }}' text-anchor='end'>minutes</text>
+{% for g in t.groups %}
+<g class='trial' role='group' aria-label='Timeline of {{ g.trial }}'>
+<text class='group-label' x='0' y='{{ g.y + 20 }}'>{{ g.trial }}</text>
+<text class='group-note{{ " bad" if g.bad }}' x='{{ t.right }}' y='{{ g.y + 20 }}'
+ text-anchor='end'>{{ g.note }}</text>
+{% for row in g.rows %}
+<g class='agent' tabindex='0' role='img' aria-label='{{ row.tip|join(", ") }}'
+ data-tip='{{ row.tip|join("\n") }}'>
+<text class='row-name' x='0' y='{{ row.text_y|px }}'>{{ row.label }}</text>
+<rect class='hit' x='{{ row.hit_x|px }}' y='{{ row.y }}' width='{{ row.hit_w|px }}' height='{{ row.height }}'/>
+{% for w in row.waits %}
+<line class='wait-track' x1='{{ w.x1|px }}' x2='{{ w.x2|px }}' y1='{{ w.y|px }}' y2='{{ w.y|px }}'/>
+{% endfor %}
+{% for b in row.bars %}
+<rect class='mark {{ b.kind }}' x='{{ b.x|px }}' y='{{ b.y|px }}' width='{{ b.w|px }}' height='{{ b.h }}' rx='{{ b.rx|px }}'/>
+{% endfor %}
+</g>
+{% endfor %}
+</g>
+{% endfor %}
+</svg></div>
+<details><summary>Show as table</summary><div class='scroll'><table>
+<thead><tr><th scope='col'>Trial</th><th scope='col'>Agent</th><th scope='col'>Start (min)</th>
+<th scope='col'>End (min)</th><th scope='col'>Length (min)</th><th scope='col'>Cost ($)</th></tr></thead>
+<tbody>
+{% for r in t.table %}
+<tr><td>{{ r.trial }}</td><th scope='row'>{{ r.agent }}</th><td>{{ r.start|minutes }}</td>
+<td>{{ r.end|minutes }}</td><td>{{ (r.end - r.start)|minutes }}</td>
+<td>{{ "–" if r.cost is none else "%.4f"|format(r.cost) }}</td></tr>
+{% endfor %}
+</tbody>
+</table></div></details>
+</figure>
+{% endif %}
+{% if failed_verdicts %}
+<h2>Failed Verdicts</h2>
+<ul>
+{% for f in failed_verdicts %}
+<li>{{ f.trial }} by {{ f.judge }}: {{ f.reason }}</li>
+{% endfor %}
+</ul>
+{% endif %}
+</main>
+<div id='tip' role='tooltip' hidden></div>
+<script>
+{{ script }}</script>
+</body>
+</html>
