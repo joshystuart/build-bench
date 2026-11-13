@@ -11,11 +11,13 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from pathlib import Path
 
 import yaml
 
 from .agent import Agent, AgentRequest, ClaudeCode
+from .progress import Live
 from .results import (
     Trial,
     new_workspaces,
@@ -117,8 +119,13 @@ def run(
     *,
     agent: Agent | None = None,
     say=print,
+    live: bool = False,
 ) -> list[Trial]:
-    """Build every missing or failed Trial. Returns the Trials that failed."""
+    """Build every missing or failed Trial. Returns the Trials that failed.
+
+    With `live`, a progress display is redrawn below the printed lines while
+    the Trials run; it needs a terminal.
+    """
     agent = agent or ClaudeCode()
     secret = os.environ[settings.auth_variable]
     version = preflight(settings, agent)
@@ -132,25 +139,30 @@ def run(
             + "\n".join(f"  {p}" for p in inherited)
         )
 
-    todo = [t for t in planned_trials(settings, folder) if not t.finished]
-    skipped = len(planned_trials(settings, folder)) - len(todo)
+    planned = planned_trials(settings, folder)
+    todo = [t for t in planned if not t.finished]
+    skipped = len(planned) - len(todo)
     if skipped:
         say(f"Skipping {skipped} finished Trial(s).")
 
     lock = threading.Lock()
+    display = Live(settings, planned, todo) if live and todo else None
+    # With the display on, lines print above it instead of through it.
+    tell = display.say if display else say
 
     def one(trial: Trial) -> None:
         with lock:
-            say(f"[start] {trial.id}")
+            tell(f"[start] {trial.id}")
         status = build_trial(settings, folder, trial, agent, version, secret)
         with lock:
             if status["status"] == "finished":
-                say(f"[done]  {trial.id} finished in {_minutes(status['agent_seconds'])}")
+                tell(f"[done]  {trial.id} finished in {_minutes(status['agent_seconds'])}")
             else:
-                say(f"[fail]  {trial.id} {status['reason']}")
+                tell(f"[fail]  {trial.id} {status['reason']}")
 
-    with ThreadPoolExecutor(max_workers=settings.concurrency) as pool:
-        list(pool.map(one, todo))
+    with display or nullcontext():
+        with ThreadPoolExecutor(max_workers=settings.concurrency) as pool:
+            list(pool.map(one, todo))
 
     record_overlap(folder)
     return [t for t in planned_trials(settings, folder) if not t.finished]

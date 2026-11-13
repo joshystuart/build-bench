@@ -5,6 +5,7 @@ Control keys (all optional):
     mode          ok | crash | hang | budget | fail_once
     per_cwd       {substring of the working folder: mode}
     sleep         seconds to wait before answering
+    events        stream events a build writes before it waits (to watch it mid-run)
     summary       the final summary a build reports
     judge_reply   the text a judge run replies with
     judge_mode    mode for judge runs
@@ -94,6 +95,12 @@ def main() -> int:
     if mode == "crash":
         print("fake claude crashed on purpose", file=sys.stderr)
         return 3
+    if not judge:
+        # Tick the plan's first box, and say what it is doing, before waiting,
+        # as an agent working through a plan would.
+        _tick_plan(cwd)
+        for event in control.get("events", []):
+            print(json.dumps(event), flush=True)
     if mode == "hang":
         time.sleep(600)
     time.sleep(control.get("sleep", 0))
@@ -152,6 +159,9 @@ def _build(cwd: str, model: str) -> None:
     git("add", "fake_committed.txt")
     git("commit", "-q", "-m", f"fake commit by {model}")
     Path(cwd, "fake_uncommitted.txt").write_text("left uncommitted\n")
+
+
+def _tick_plan(cwd: str) -> None:
     for plan in sorted(Path(cwd).rglob("*.md")):
         if ".git" in plan.parts:
             continue

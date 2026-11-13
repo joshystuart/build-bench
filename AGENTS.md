@@ -21,6 +21,8 @@ It must pass before a change is done. CI runs the same command.
 - `agent.py` — starting headless Claude Code (the one place that knows how;
   see `docs/headless-trials.md`).
 - `run.py` — `run`: workspaces, `pre_build`, diffs, concurrency, resume.
+- `progress.py` — the live display `run` draws in a terminal, read from the
+  files the Trials write.
 - `transcript.py`, `lines.py` — measurements from transcripts and diffs.
 - `judge.py` — `judge`: measurements, checks, API and Agent Judges, Verdicts.
 - `report.py`, `html_report.py` — `report`.
