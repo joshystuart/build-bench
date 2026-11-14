@@ -1,7 +1,7 @@
 # build-bench
 
-A tool that runs the same build task under several agent setups, then scores
-the results so the setups can be compared.
+A tool that runs the same build task under several agent setups, then measures
+and reviews the results so the setups can be compared.
 
 ## Language
 
@@ -21,10 +21,24 @@ has three trials.
 _Avoid_: Run, attempt, session
 
 **Judge**:
-Something that scores a trial: either an agent that can inspect the trial, or
+Something that reviews a trial: either an agent that can inspect the trial, or
 a single model call that reads the evidence it is sent.
 _Avoid_: Evaluator, grader, test
 
 **Verdict**:
-One judge's scores and notes for one trial.
+One judge's findings and note for one trial.
 _Avoid_: Evaluation, review, result
+
+**Finding**:
+One problem that one judge reports in one trial, with a severity: critical,
+major, minor or nit.
+_Avoid_: Bug, issue, comment
+
+**Defect**:
+One distinct problem in the experiment's builds, merged from every finding
+that describes it. Nits are never merged into defects.
+_Avoid_: Bug, issue, finding
+
+**Defect check**:
+One judge's answers, for one trial, to whether it has each defect.
+_Avoid_: Confirmation, verification, vote

@@ -1,4 +1,4 @@
-"""Measurements read from a Trial's diffs: production and test lines, ticked criteria."""
+"""Measurements read from a Trial's diffs: production and test lines."""
 
 from __future__ import annotations
 
@@ -126,19 +126,3 @@ def count_lines(
         if any(counts.values()):
             files.append({"path": f.path, **counts})
     return {**totals, "files": files}
-
-
-_TICKED = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+\[[xX]\]")
-
-
-def criteria_ticked(plan_diff: str) -> int:
-    """Checkboxes ticked in the plan: ticked lines added minus ticked lines removed."""
-    added = removed = 0
-    for line in plan_diff.splitlines():
-        if line.startswith(("+++", "---")):
-            continue
-        if line.startswith("+") and _TICKED.match(line[1:]):
-            added += 1
-        elif line.startswith("-") and _TICKED.match(line[1:]):
-            removed += 1
-    return added - removed

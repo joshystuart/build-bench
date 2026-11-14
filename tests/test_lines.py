@@ -1,4 +1,4 @@
-"""Line counts, plan criteria and checks."""
+"""Line counts and checks."""
 
 import json
 from pathlib import Path
@@ -7,7 +7,7 @@ import pytest
 from conftest import results_folder, workspace_home
 
 from build_bench import settings as settings_module
-from build_bench.lines import count_lines, criteria_ticked, matches
+from build_bench.lines import count_lines, matches
 
 DIFFS = Path(__file__).parent / "fixtures" / "diffs"
 
@@ -81,6 +81,18 @@ def test_presets_and_settings_globs_add_up(experiment):
     assert "**/*_test.go" in tests and "spec/**" in tests and "**/go.sum" in ignore
 
 
+def test_a_rust_modules_tests_file_is_test_code(experiment):
+    """`mod tests;` beside the code keeps its tests in `tests.rs`, not in a `tests/` folder."""
+    diff = (
+        "diff --git a/src/backend/tests.rs b/src/backend/tests.rs\n"
+        "--- a/src/backend/tests.rs\n+++ b/src/backend/tests.rs\n"
+        "@@ -1,1 +1,3 @@\n use super::*;\n+#[test]\n+fn replaces() {}\n"
+    )
+    tests, ignore, rust = preset_rules(experiment, "rust")
+    found = count_lines(diff, tests, ignore, rust)
+    assert (found["prod_added"], found["test_added"]) == (0, 2)
+
+
 def test_rust_inline_test_blocks_count_as_test_only_with_the_rust_preset(experiment):
     tests, ignore, rust = preset_rules(experiment, "rust")
     assert counts("rust-inline.diff", tests, ignore, rust) == {
@@ -113,11 +125,6 @@ def test_glob_matching(path, pattern, hit):
     assert matches(path, [pattern]) is hit
 
 
-def test_plan_criteria_ticked_are_counted_from_the_plan_diff():
-    assert criteria_ticked((DIFFS / "plan-two-ticks.diff").read_text()) == 2
-    assert criteria_ticked("") == 0
-
-
 # --- Through the command line --------------------------------------------------------
 
 
@@ -138,8 +145,8 @@ def test_checks_run_in_a_throwaway_copy(experiment, fake, cli):
     after = sorted(p.relative_to(home).as_posix() for p in home.rglob("*"))
     assert before == after
     assert (home / "repo/calc.py").exists()
-    # The fake ticked one plan box.
-    assert measured["criteria_ticked"] == 1
+    # Boxes the build ticked in the plan are its own claim, not a measurement.
+    assert "criteria_ticked" not in measured
     assert measured["lines"]["prod_added"] == 2  # fake_committed.txt and fake_uncommitted.txt
 
 

@@ -7,8 +7,12 @@ Control keys (all optional):
     sleep         seconds to wait before answering
     events        stream events a build writes before it waits (to watch it mid-run)
     summary       the final summary a build reports
-    judge_reply   the text a judge run replies with
+    judge_reply   the text a judge replies with when asked for a Verdict
+    merge_reply   the text a judge replies with when asked to merge Findings
+    check_present yes | no | unsure: what a judge answers for every Defect
     judge_mode    mode for judge runs
+    merge_mode    mode for merge runs (default: judge_mode)
+    check_mode    mode for defect-check runs (default: judge_mode)
 
 Every call is recorded as one JSON file in $FAKE_CLAUDE_LOG.
 """
@@ -23,14 +27,10 @@ import time
 import uuid
 from pathlib import Path
 
-FIXTURE = Path(__file__).parent / "fixtures" / "transcripts" / "subagents"
-GOOD_VERDICT = """## 8. Verdict
+sys.path.insert(0, str(Path(__file__).parent))
+import replies  # noqa: E402
 
-```json
-{"scores": {"correctness": 7, "spec_completeness": 6, "code_quality": 8,
- "test_quality": 5, "honesty": 9}, "bugs": ["calc.py:3 off by one"], "note": "Fine."}
-```
-"""
+FIXTURE = Path(__file__).parent / "fixtures" / "transcripts" / "subagents"
 
 
 def main() -> int:
@@ -46,8 +46,11 @@ def main() -> int:
 
     prompt = sys.stdin.read()
     cwd = os.getcwd()
-    judge = '"correctness"' in prompt
-    mode = control.get("judge_mode" if judge else "mode", "ok")
+    kind = replies.kind(prompt)
+    judge = kind is not None
+    mode = control.get("mode", "ok")
+    if judge:
+        mode = control.get(f"{kind}_mode", control.get("judge_mode", "ok"))
     for key, value in control.get("per_cwd", {}).items():
         if key in cwd and not judge:
             mode = value
@@ -64,6 +67,7 @@ def main() -> int:
         "cwd": cwd,
         "prompt": prompt,
         "judge": judge,
+        "kind": kind,
         "mode": mode,
         "env": {
             k: os.environ.get(k)
@@ -80,6 +84,11 @@ def main() -> int:
         "cwd_files": sorted(
             p.relative_to(cwd).as_posix()
             for p in Path(cwd).rglob("*")
+            if ".git" not in p.relative_to(cwd).parts
+        ),
+        "plan_text": "".join(
+            p.read_text()
+            for p in sorted(Path(cwd).rglob("*.md"))
             if ".git" not in p.relative_to(cwd).parts
         ),
         "git_log": subprocess.run(
@@ -131,7 +140,13 @@ def main() -> int:
             "total_cost_usd": 0.5,
         }
     else:
-        reply = control.get("judge_reply", GOOD_VERDICT) if judge else None
+        reply = None
+        if kind == "find":
+            reply = control.get("judge_reply", replies.FOUND)
+        elif kind == "merge":
+            reply = control.get("merge_reply", replies.merge_reply(prompt))
+        elif kind == "check":
+            reply = replies.check_reply(prompt, control.get("check_present", "yes"))
         result = {
             "type": "result",
             "subtype": "success",

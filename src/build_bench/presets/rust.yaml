@@ -1,5 +1,5 @@
-# Rust: integration tests and benches are test files; `#[cfg(test)]` blocks
-# inside source files also count as test lines.
-test_paths: ["tests/**", "**/tests/**", "benches/**", "**/benches/**"]
+# Rust: integration tests, benches and a module's `tests.rs` are test files;
+# `#[cfg(test)]` blocks inside source files also count as test lines.
+test_paths: ["tests/**", "**/tests/**", "**/tests.rs", "benches/**", "**/benches/**"]
 ignore_paths: ["Cargo.lock", "**/Cargo.lock", "target/**"]
 inline_tests: rust

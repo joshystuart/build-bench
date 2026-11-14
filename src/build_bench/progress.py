@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TextIO
 
+from .agent import USD_PER_NANO_AIU
 from .results import Trial, read_json
 from .settings import Price, Settings
 from .transcript import default_prices, load_jsonl, messages, tokens_and_cost
@@ -94,8 +95,36 @@ def describe(block: dict) -> str:
     return " ".join(f"{name} {what}".split())[:60]
 
 
+def read_copilot_stream(entries: list[dict]) -> Stream:
+    """The Copilot CLI's stream: tool calls, running subagents and the end. It has
+    no todo list, and what the run costs is only known once it ends."""
+    found = Stream()
+    for entry in entries:
+        kind, data = entry.get("type"), entry.get("data") or {}
+        if kind == "tool.execution_start":
+            name, given = str(data.get("toolName", "?")), data.get("arguments") or {}
+            what = given.get("description") or given.get("command") or given.get("path") or ""
+            said = " ".join(f"{name} {Path(str(what)).name if name != 'bash' else what}".split())
+            if entry.get("agentId"):
+                found.last = "subagent: " + said[:60]
+                continue
+            found.tools += 1
+            found.last = said[:60]
+        elif kind == "subagent.started":
+            found.subagents[str(entry.get("agentId"))] = str(data.get("agentDisplayName", ""))
+        elif kind in ("subagent.completed", "subagent.failed"):
+            found.subagents.pop(str(entry.get("agentId")), None)
+        elif kind == "session.usage_checkpoint" and data.get("totalNanoAiu"):
+            found.cost = data["totalNanoAiu"] * USD_PER_NANO_AIU
+        elif kind == "result":
+            found.ended = True
+    return found
+
+
 def read_stream(path: Path, prices: dict[str, Price]) -> Stream:
     entries = load_jsonl(path)
+    if any(entry.get("type") == "session.start" for entry in entries):
+        return read_copilot_stream(entries)
     found = Stream()
     made = completed = 0
     for entry in entries:

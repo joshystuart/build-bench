@@ -21,7 +21,7 @@ from importlib.resources import files
 from jinja2 import Environment, PackageLoader, StrictUndefined
 from markupsafe import Markup, escape
 
-from .report import BUILD, OUTPUT, SCORE_COLUMNS, cell, first_paragraph, flag_lines, num
+from .report import failed_judging_lines, first_paragraph, flag_lines, tables
 
 _TEMPLATES = files("build_bench") / "templates"
 
@@ -35,21 +35,6 @@ _ENV = Environment(
 )
 _ENV.filters["px"] = lambda value: f"{value:.1f}"
 _ENV.filters["minutes"] = lambda seconds: f"{seconds / 60:.2f}"
-
-
-@dataclass
-class Table:
-    """The first value of each row is its row header."""
-
-    head: list[str]
-    rows: list[list[str]]
-
-
-@dataclass
-class Section:
-    title: str
-    table: Table
-    note: str = ""
 
 
 @dataclass
@@ -127,32 +112,6 @@ class Timeline:
     ticks: list[Tick]
     groups: list[TrialGroup]
     table: list[TimeRow]
-
-
-def _summary_table(variants: list[dict], group: str, columns, judge: str | None = None) -> Table:
-    rows = []
-    for v in variants:
-        values = v[group][judge] if judge else v[group]
-        cells = [cell(values[key]) for key, _, _ in columns]
-        rows.append([v["name"], f"{v['finished']}/{v['trials']}", *cells])
-    return Table(["Variant", "Finished", *(label for _, label, _ in columns)], rows)
-
-
-def _judges_table(judges: list[dict]) -> Table:
-    head = ["Judge", "Type", "Model", "Verdicts", "Failed", "Cost ($)", "Time (min)"]
-    rows = [
-        [
-            j["name"],
-            j["type"] or "–",
-            j["model"] or "–",
-            str(j["verdicts"]),
-            str(j["failed"]),
-            num(j["cost_usd"]),
-            num(j["minutes"]),
-        ]
-        for j in judges
-    ]
-    return Table(head, rows)
 
 
 def _problems(data: dict) -> list[Problem]:
@@ -294,34 +253,14 @@ def _bullet(line: str) -> Markup:
 
 
 def html(data: dict) -> str:
-    sections = [
-        Section(
-            "Build",
-            _summary_table(data["variants"], "build", BUILD),
-            "Each cell is the average over finished Trials, with the lowest and highest in "
-            "brackets. Failed Trials are left out.",
-        ),
-        Section("Output", _summary_table(data["variants"], "output", OUTPUT)),
-    ]
-    for j in data["judges"]:
-        table = _summary_table(data["variants"], "scores", SCORE_COLUMNS, judge=j["name"])
-        sections.append(Section(f"Scores: {j['name']}", table))
-    if data["judges"]:
-        sections.append(
-            Section(
-                "Judges",
-                _judges_table(data["judges"]),
-                "Judging cost and time, kept apart from the build numbers.",
-            )
-        )
     timed = [r for r in data["trials"] if r.get("timeline")]
     return _ENV.get_template("report.html.j2").render(
         experiment=data["experiment"],
         flags=[_bullet(line) for line in flag_lines(data)],
         problems=_problems(data),
-        sections=sections,
+        tables=tables(data),
         timeline=_timeline(timed) if timed else None,
-        failed_verdicts=data["failed_verdicts"],
+        failed_judging=failed_judging_lines(data),
         css=Markup((_TEMPLATES / "report.css").read_text()),
         script=Markup((_TEMPLATES / "report.js").read_text()),
     )

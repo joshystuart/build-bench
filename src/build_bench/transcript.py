@@ -5,6 +5,10 @@ several lines (one per content block) that repeat the same usage, so usage is
 counted once per message id. Subagents write their own files under
 ``subagents/``, each with a ``.meta.json`` naming the Agent tool call that
 started it.
+
+A Copilot CLI transcript is its session's ``events.jsonl``: one file for the
+main agent and its subagents, whose events carry an ``agentId``. Each model
+call is one ``session.usage_record`` with its tokens and what Copilot charged.
 """
 
 from __future__ import annotations
@@ -18,6 +22,7 @@ from typing import Any
 
 import yaml
 
+from .agent import USD_PER_NANO_AIU
 from .settings import Price
 
 #: Tools that start subagents; their time is waiting, not tool work.
@@ -198,6 +203,8 @@ def idle_gaps(entries: list[dict]) -> list[tuple[float, float]]:
 def measure(transcript: Path, prices: dict[str, Price]) -> dict[str, Any]:
     """Every transcript measurement for one Trial. ``transcript`` holds main.jsonl."""
     main = load_jsonl(transcript / "main.jsonl")
+    if any(entry.get("type") == "session.start" for entry in main):
+        return measure_copilot(main, prices)
     times = [t for t in map(_time, main) if t is not None]
     if not times:
         raise ValueError(f"no timed entries in {transcript / 'main.jsonl'}")
@@ -263,12 +270,148 @@ def measure(transcript: Path, prices: dict[str, Price]) -> dict[str, Any]:
         del sub["_start"], sub["_end"]
     return {
         "cost_usd": cost,
+        "cost_basis": "list prices",
         "tokens": tokens,
         "unpriced_models": unpriced,
         "by_agent": agents,
         "total_seconds": round(max(times) - origin, 3),
         "wait_seconds": round(sum(e - s for s, e in waits), 3),
         "wait_intervals": [[rel(s), rel(e)] for s, e in waits],
+        "subagents": subagents,
+        "tool_seconds": {k: round(v, 3) for k, v in sorted(tool_seconds.items())},
+    }
+
+
+def measure_copilot(events: list[dict], prices: dict[str, Price]) -> dict[str, Any]:
+    """Every transcript measurement for one Trial built by the Copilot CLI.
+
+    Cost is what Copilot charged in AI credits, a cent each. A model call with
+    no charge recorded is priced from the price table, or named as unpriced.
+    """
+    times = [t for t in map(_time, events) if t is not None]
+    if not times:
+        raise ValueError("no timed entries in the Copilot event log")
+    origin = min(times)
+
+    def rel(t: float) -> float:
+        return round(t - origin, 3)
+
+    tokens: dict[str, dict[str, int]] = {}
+    costs: dict[str, float] = {}
+    unpriced: set[str] = set()
+    for event in events:
+        if event.get("type") != "session.usage_record":
+            continue
+        usage = (event.get("data") or {}).get("usage") or {}
+        agent = event.get("agentId") or "main"
+        read = int(usage.get("cacheReadTokens") or 0)
+        write = int(usage.get("cacheWriteTokens") or 0)
+        counted = {
+            # Copilot's input count includes the cached tokens.
+            "input": max(int(usage.get("inputTokens") or 0) - read - write, 0),
+            "output": int(usage.get("outputTokens") or 0),
+            "cache_read": read,
+            "cache_write": write,
+        }
+        mine = tokens.setdefault(agent, dict.fromkeys(TOKEN_KINDS, 0))
+        for kind in TOKEN_KINDS:
+            mine[kind] += counted[kind]
+        charged = (usage.get("copilotUsage") or {}).get("totalNanoAiu")
+        if charged is not None:
+            costs[agent] = costs.get(agent, 0.0) + charged * USD_PER_NANO_AIU
+            continue
+        # Copilot writes versions with a dot (claude-sonnet-5.5); the table uses dashes.
+        model = str(usage.get("model") or "unknown")
+        price = price_for(model, prices) or price_for(model.replace(".", "-"), prices)
+        if price is None:
+            unpriced.add(model)
+            continue
+        costs[agent] = (
+            costs.get(agent, 0.0)
+            + (
+                counted["input"] * price.input
+                + counted["output"] * price.output
+                + read * (price.cache_read if price.cache_read is not None else price.input * 0.1)
+                + write
+                * (price.cache_write_5m if price.cache_write_5m is not None else price.input * 1.25)
+            )
+            / 1_000_000
+        )
+
+    def spent(agent: str) -> tuple[dict[str, int], float]:
+        mine = dict(tokens.get(agent) or dict.fromkeys(TOKEN_KINDS, 0))
+        mine["total"] = sum(mine[k] for k in TOKEN_KINDS)
+        return mine, costs.get(agent, 0.0)
+
+    started: dict[str, dict] = {}
+    subagents: list[dict[str, Any]] = []
+    waits: list[tuple[float, float]] = []
+    for event in events:
+        when, data = _time(event), event.get("data") or {}
+        if event.get("type") == "subagent.started" and when is not None:
+            started[str(event.get("agentId"))] = {"data": data, "start": when}
+        elif event.get("type") == "subagent.completed" and str(event.get("agentId")) in started:
+            agent = str(event.get("agentId"))
+            begun = started.pop(agent)
+            end = when if when is not None else begun["start"]
+            sub_tokens, sub_cost = spent(agent)
+            background = begun["data"].get("executionMode") != "sync"
+            if not background:
+                waits.append((begun["start"], end))
+            subagents.append(
+                {
+                    "id": agent,
+                    "name": begun["data"].get("agentDisplayName")
+                    or begun["data"].get("agentDescription")
+                    or agent,
+                    "type": begun["data"].get("agentType"),
+                    "start": rel(begun["start"]),
+                    "end": rel(end),
+                    "seconds": round(end - begun["start"], 3),
+                    "tokens": sub_tokens,
+                    "cost_usd": sub_cost,
+                    "tool_use_id": data.get("toolCallId"),
+                    "background": background,
+                }
+            )
+
+    main_tokens, main_cost = spent("main")
+    agents = [{"agent": "main", "tokens": main_tokens, "cost_usd": main_cost}]
+    agents += [
+        {"agent": s["name"], "tokens": s["tokens"], "cost_usd": s["cost_usd"]} for s in subagents
+    ]
+    total = dict.fromkeys(TOKEN_KINDS, 0)
+    for mine in tokens.values():
+        for kind in TOKEN_KINDS:
+            total[kind] += mine[kind]
+    total["total"] = sum(total[k] for k in TOKEN_KINDS)
+
+    begun_at: dict[str, tuple[str, dict, float]] = {}
+    tool_seconds: dict[str, float] = {}
+    for event in events:
+        when, data = _time(event), event.get("data") or {}
+        call = str(data.get("toolCallId"))
+        if event.get("type") == "tool.execution_start" and when is not None:
+            begun_at[call] = (str(data.get("toolName")), data.get("arguments") or {}, when)
+        elif event.get("type") == "tool.execution_complete" and call in begun_at:
+            name, given, start = begun_at.pop(call)
+            if name == "task" or when is None:  # a subagent: waiting, not tool work
+                continue
+            kind = (
+                f"bash: {command_kind(str(given.get('command', '')))}" if name == "bash" else name
+            )
+            tool_seconds[kind] = tool_seconds.get(kind, 0.0) + (when - start)
+
+    merged = merge(waits)
+    return {
+        "cost_usd": sum(costs.values()),
+        "cost_basis": "Copilot AI credits",
+        "tokens": total,
+        "unpriced_models": sorted(unpriced),
+        "by_agent": agents,
+        "total_seconds": round(max(times) - origin, 3),
+        "wait_seconds": round(sum(e - s for s, e in merged), 3),
+        "wait_intervals": [[rel(s), rel(e)] for s, e in merged],
         "subagents": subagents,
         "tool_seconds": {k: round(v, 3) for k, v in sorted(tool_seconds.items())},
     }

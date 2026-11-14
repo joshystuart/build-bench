@@ -9,12 +9,9 @@ from types import SimpleNamespace
 
 import litellm
 import pytest
+import replies
 from conftest import results_folder, workspace_home
 
-REPLY = (
-    '```json\n{"scores": {"correctness": 7, "spec_completeness": 6, "code_quality": 8, '
-    '"test_quality": 5, "honesty": 9}, "bugs": [], "note": "ok"}\n```'
-)
 JUDGES = [
     {"name": "api", "type": "api", "model": "openai/gpt-5"},
     {"name": "agent", "type": "claude", "model": "claude-sonnet-5-5"},
@@ -32,7 +29,13 @@ def model(monkeypatch):
 
     def completion(**request):
         calls.append(request)
-        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=REPLY))])
+        text = "\n".join(m["content"] for m in request["messages"])
+        reply = {
+            "find": replies.FOUND,
+            "merge": replies.merge_reply(text),
+            "check": replies.check_reply(text),
+        }[replies.kind(text)]
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=reply))])
 
     monkeypatch.setattr(litellm, "completion", completion)
     return calls
@@ -48,11 +51,14 @@ def test_all_runs_judges_and_reports_into_one_folder(experiment, fake, cli, mode
         assert json.loads((t / "status.json").read_text())["status"] == "finished"
         assert (t / "measurements.json").is_file()
         for judge in ("api", "agent"):
-            assert json.loads((t / "verdicts" / f"{judge}.json").read_text())["status"] == "ok"
+            for step in ("verdicts", "defect-checks"):
+                assert json.loads((t / step / f"{judge}.json").read_text())["status"] == "ok"
+    assert json.loads((folder / "defects.json").read_text())["judge"] == "api"
     for name in ("report.json", "report.md", "report.html"):
         assert (folder / name).is_file()
-    assert len(model) == 3
-    assert len(fake.calls(judge=True)) == 3
+    # Each Judge gives three Verdicts and three Defect checks; the first Judge also merges.
+    assert len(model) == 7
+    assert len(fake.calls(judge=True)) == 6
 
 
 def test_all_carries_on_past_a_failed_trial_and_exits_non_zero(experiment, fake, cli, model):
@@ -61,7 +67,7 @@ def test_all_carries_on_past_a_failed_trial_and_exits_non_zero(experiment, fake,
     code, out, _ = cli("all", settings)
     assert code == 1
     folder = results_folder(settings)
-    assert len(model) == 2
+    assert len(model) == 5
     assert not (folder / "trials/v1-2/verdicts").exists()
     md = (folder / "report.md").read_text()
     assert "## Failed Trials\n\n- v1-2: crashed: exit code 3" in md
@@ -92,7 +98,13 @@ def test_clean_removes_workspaces_and_keeps_results(experiment, fake, cli, model
     assert f"Removed 3 workspace(s) from {folder}" in out
     assert not homes[0].parent.exists()
     assert files(folder) == before
-    for kept in ("transcript/main.jsonl", "diff.patch", "measurements.json", "verdicts/api.json"):
+    for kept in (
+        "transcript/main.jsonl",
+        "diff.patch",
+        "measurements.json",
+        "verdicts/api.json",
+        "defect-checks/api.json",
+    ):
         assert f"trials/v1-1/{kept}" in before
     assert "report.md" in before
 
@@ -106,7 +118,8 @@ def test_clean_removes_workspaces_and_keeps_results(experiment, fake, cli, model
     )
     model.clear()
     assert cli("judge", later)[0] == 0
-    assert len(model) == 3
+    # The new Judge's three Verdicts, one merge of its Findings and its three Defect checks.
+    assert len(model) == 7
     assert "+committed by the fake agent" in model[0]["messages"][1]["content"]
 
 

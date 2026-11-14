@@ -7,16 +7,17 @@
 > plans and repositories you trust.
 
 build-bench runs the same build task under several coding-agent setups, then
-scores the results so the setups can be compared. Describe an **Experiment**
+measures and reviews the results so the setups can be compared. Describe an **Experiment**
 in one settings file: a target repository, a base commit, an optional plan,
 the **Variants** to compare (prompt, model, effort, config folder) and the
 **Judges**. build-bench builds each Variant a number of times (each build is a
-**Trial**), measures every Trial, asks each Judge for a **Verdict**, and
+**Trial**), measures every Trial, has the Judges find each Trial's **Defects**, and
 writes a report. The words are defined in [GLOSSARY.md](GLOSSARY.md).
 
-Builds run with headless [Claude Code](https://code.claude.com). Judges are
-either Claude Code agents or a single model call to any provider through
-LiteLLM. Nothing in build-bench assumes a language or build system.
+Builds run with headless [Claude Code](https://code.claude.com) or the
+[GitHub Copilot CLI](https://github.com/github/copilot-cli), chosen per
+Variant. Judges are either one of those agents or a single model call to any
+provider through LiteLLM. Nothing in build-bench assumes a language or build system.
 
 ## Install
 
@@ -39,12 +40,12 @@ latest results folder for the Experiment unless you pass `--results DIR`.
 | Command | What it does |
 |---|---|
 | `build-bench run settings.yml` | Builds every Trial into a new results folder. `--resume` (or `--results DIR`) finishes the missing and failed Trials of an existing one instead. |
-| `build-bench judge settings.yml` | Measures every finished Trial, then asks every Judge for a Verdict. Skips work already saved, so a Judge added later only judges. |
+| `build-bench judge settings.yml` | Measures every finished Trial, then has the Judges find its problems, merge them into Defects and check every Trial for each. Skips work already saved, so a Judge added later only judges. |
 | `build-bench report settings.yml` | Writes `report.json`, `report.md` and `report.html` from the results folder alone. Starts no agent and calls no model. |
 | `build-bench all settings.yml` | `run`, `judge` and `report` in series, into a new results folder. Carries on past failed Trials. |
 | `build-bench clean settings.yml` | Deletes the Trial workspaces of a results folder (kept outside it, under `~/.cache/build-bench/`) and keeps everything else. |
 
-Exit codes: `0` when everything worked, `1` when a Trial or a Verdict failed
+Exit codes: `0` when everything worked, `1` when a Trial or a step of judging failed
 (the rest are still saved and reported), `2` when nothing could start (bad
 settings, a missing key, a Claude Code version that does not match the pin).
 
@@ -96,9 +97,10 @@ results: .bench/results         # optional; this is the default
 pre_build: [npm ci]             # optional; run in each Trial before the agent
 checks: npm run check           # optional; run by `judge` in a copy of each Trial
 concurrency: 2                  # Trials (and Judges) at once
-auth: api-key                   # or: subscription
+auth: api-key                   # or: subscription; Claude Code's login, needed only if it is used
 auth_env: MY_ANTHROPIC_KEY      # optional; the variable holding the login
 claude_version: 2.1.319         # optional; `run` stops if another version is installed
+copilot_version: 1.0.112        # optional; the same for the Copilot CLI
 limits: { timeout_minutes: 120, max_budget_usd: 40 }   # per Trial, both optional
 languages: [typescript]         # optional presets: rust, typescript, python, go
 test_paths: ["e2e/**"]          # optional; added to the presets
@@ -107,6 +109,7 @@ prices:                         # optional; US dollars per million tokens
   claude-opus-5-5: { input: 4.0, output: 20.0, cache_read: 0.20 }
 variants:
   - name: opus-single
+    agent: claude               # optional: claude (the default) or copilot
     prompt: prompts/single.md   # `{{plan}}` becomes the plan's path
     model: claude-opus-5-5
     effort: high                # optional: low, medium, high, xhigh, max
@@ -122,7 +125,7 @@ variants:
     repeats: 3
 judges:
   - name: blind-agent
-    type: claude                # a Claude Code agent in a copy of the Trial
+    type: claude                # an agent in a copy of the Trial: claude or copilot
     model: claude-opus-5-5
     effort: high                # optional
   - name: diff-only
@@ -131,6 +134,7 @@ judges:
     prompt: judges/diff.md      # optional; defaults to the shipped prompt
     api_key_env: MY_OPENAI_KEY  # optional; default is the provider's usual variable
     limits: { timeout_minutes: 10 }   # optional; falls back to the Experiment's
+merge_judge: diff-only          # optional; the Judge that merges Findings (default: the first)
 ```
 
 A settings file with missing or wrong fields is rejected before anything
@@ -145,7 +149,12 @@ and no results file holds one.
   long-lived token with `claude setup-token`.
 - `auth: api-key` reads `ANTHROPIC_API_KEY` (or `auth_env`).
 - An API Judge reads its provider's usual variable (for example
-  `OPENAI_API_KEY`), or `api_key_env`. Agent Judges use the Experiment's login.
+  `OPENAI_API_KEY`), or `api_key_env`. Claude Code Judges use the Experiment's
+  login.
+- The Copilot CLI finds its own login, so there is nothing to set: a token in
+  `COPILOT_GITHUB_TOKEN`, `GH_TOKEN` or `GITHUB_TOKEN`, else the login
+  `copilot login` saved in the system keychain, else the `gh` command's. An
+  Experiment that uses only Copilot can leave `auth` out.
 
 If a needed variable is missing, the command stops before the first Trial (or
 the first Judge) and names it. The report says which login was used:
@@ -259,6 +268,25 @@ open experiments/.bench/results/calc-mul/*/report.html
   as one diff that leaves out files git ignores (so what `pre_build` installs
   does not count). The plan folder is diffed separately.
 
+## Copilot Variants
+
+A Variant with `agent: copilot` is built by the GitHub Copilot CLI, which
+reaches models from several providers through one subscription. Write `model`
+the way Copilot names it, with a dot in the version (`claude-sonnet-5.5`).
+Everything else is the same: its own clone, its own empty home folder with
+the Variant's `config` and `skills`, the same diffs, measurements and Judges.
+
+Three things differ from Claude Code, and
+[docs/headless-trials.md](docs/headless-trials.md) has the detail:
+
+- **Cost is what Copilot charged,** in its AI credits at a cent each, not list
+  prices. The report says so when an Experiment has both kinds.
+- **`max_budget_usd` is not enforced.** The Copilot CLI has no spending limit
+  for a whole run; `timeout_minutes` still applies.
+- **Skills in `~/.agents/skills/` reach every Copilot Trial,** because the CLI
+  reads that folder as well as its home folder. Move them away for a clean
+  comparison.
+
 ## Measurements
 
 `judge` saves `measurements.json` for each finished Trial:
@@ -279,13 +307,35 @@ open experiments/.bench/results/calc-mul/*/report.html
   (`presets/ruby.yaml` makes `languages: [ruby]` work).
 - **Checks:** whether `checks` passes, run in a throwaway copy of the
   workspace, with its output in `checks.log`.
-- **Plan criteria ticked:** checkboxes ticked in the plan diff.
+
+Boxes a build ticks in the plan are not measured: they are the build's own
+claim, and a plan need not have any.
 
 ## Judges
 
+Scores from 1 to 10 did not tell builds apart: when this tool was tried out, a
+Judge gave six different builds the same five numbers. So Judges look for what
+is wrong, and
+`judge` works in three steps. Each skips what is already saved.
+
+1. **Find.** Each Judge reviews each Trial and gives a Verdict: its Findings,
+   each with a severity (`critical`, `major`, `minor` or `nit`), a place in the
+   code and whether the Judge reproduced it, plus a note.
+2. **Merge.** One Judge (`merge_judge`, else the first) groups every Finding
+   worse than a nit into the Experiment's distinct Defects, saved in
+   `defects.json`. The same problem found in several Trials, in different
+   words, becomes one Defect, as severe as its worst Finding. A Defect keeps
+   its id when later Findings join it.
+3. **Check.** Each Judge is then asked, for each Trial, whether it has each
+   Defect: yes, no or unsure, with the place in the code. One review misses
+   much of what is there, so this is what puts every Variant on the same list.
+
 Each Judge sees one Trial at a time under a random label (`trial-3fa9c1`),
 never the Variant's name, its model or other Trials, and never changes the
-saved Trial.
+saved Trial. It is shown the plan as it was before the build, never the build's
+changes to the plan or its final summary: both can name the Variant, and every
+build is held to the same plan. It is told the line counts and the checks
+result, so it does not count them again.
 
 Blindness has a known limit: a Trial's folder is named after its Variant, so
 absolute paths that tools write into ignored files (a virtualenv's scripts,
@@ -295,29 +345,50 @@ those files.
 - **Agent Judge** (`type: claude`): a headless Claude Code agent in a
   throwaway copy of the workspace with an empty config folder. The build's
   commits are folded into uncommitted changes on the base commit, since commit
-  messages can name the model. It can open files and run the checks. After
-  `clean` it records a failed Verdict saying the workspace is gone.
+  messages can name the model. It can open files, run the checks and write a
+  test to reproduce a problem. After `clean` it records a failed Verdict saying
+  the workspace is gone.
 - **API Judge** (`type: api`): one model call through LiteLLM with the plan,
-  the diff against the base commit, the checks output and the Trial's final
-  summary. It works after `clean`.
+  the diff against the base commit and the checks output. It works after
+  `clean`.
 
-Every Verdict holds five scores from 1 to 10 (`correctness`,
-`spec_completeness`, `code_quality`, `test_quality`, `honesty`), a list of bugs
-and a note, plus the Judge's own cost and time. A reply missing a score or
-with one out of range is recorded as a failed Verdict with the reason, and
-`judge` runs it again next time. The shipped prompt is
-[src/build_bench/prompts/judge.md](src/build_bench/prompts/judge.md): four
-tasks, 5 means "mergeable after notable fixes", 8 means "mergeable with minor
-nits", and an eight-section answer ending in the Verdict JSON.
+Use Judges from more than one provider. A Judge tends to go easy on work from
+its own model family, and the report says so when every Judge is a Claude
+model like the builders. Two ways to reach other models with one account:
+
+- **OpenRouter:** `model: openrouter/<vendor>/<model>`, with the key in
+  `OPENROUTER_API_KEY`.
+- **GitHub Copilot:** `model: github_copilot/<model>`. There is no key
+  variable: `judge` and `all` log in before anything else starts, and the first
+  time print a code to enter at github.com. LiteLLM keeps the login in
+  `~/.config/litellm/github_copilot/`.
+
+A reply that is missing a severity, or names one that does not exist, is
+recorded as a failed Verdict with the reason, and `judge` runs it again next
+time. A Verdict is also given again when its Judge's prompt has changed, so one
+Experiment never mixes Verdicts from two prompts. The shipped prompts are in
+[src/build_bench/prompts/](src/build_bench/prompts/): `judge.md` for Verdicts
+(a Judge's own `prompt` replaces it), `merge.md` and `check.md`.
 
 ## The report
 
-`report.md` has one line per Variant for each number: the average over
-finished Trials, the lowest and highest, and how many Trials finished. Failed
-Trials and failed Verdicts are listed with their reasons and left out of the
-averages. Judge cost and time are shown apart from the build numbers. It flags
-Trials that ran alongside others (time comparisons between them are weaker), an
-Experiment whose Trials used different Claude Code versions, and the login
+`report.md` has these tables, with one line per Variant unless noted:
+
+- **Build** and **Output:** the average over finished Trials, with the lowest
+  and highest.
+- **Quality:** how many Trials finished and how many passed the checks, both
+  out of every Trial, so a Trial that failed counts against its Variant. Then
+  the Defects one Trial has, by severity, and the nits one Judge listed.
+- **Defects:** one line per Defect, worst first, with the Trials of each
+  Variant that have it. A Trial has a Defect when more of its Judges say it
+  does than say it does not; an even split is shown as disputed.
+- **Judges:** each Judge's Verdicts, Defect checks, failures, cost and time,
+  kept apart from the build numbers.
+
+Failed Trials, failed Verdicts and failed Defect checks are listed with their
+reasons. The report flags Trials that ran alongside others (time comparisons
+between them are weaker), an Experiment whose Trials used different Claude Code
+versions, Judges that all share the builders' model family, and the login
 type. `report.json` holds every number, per Trial and per Variant.
 `report.html` adds a timeline per Trial on one time scale, works offline, and
 has a "Show as table" alternative for every chart.
@@ -331,7 +402,9 @@ has a "Show as table" alternative for every chart.
     status.json  prompt.md  stream.jsonl  stderr.log  summary.md
     transcript/main.jsonl  transcript/subagents/
     diff.patch  diff-full.patch  plan.diff  timings.json  pre_build.log
-    measurements.json  checks.log  verdicts/<judge>.json
+    measurements.json  checks.log
+    verdicts/<judge>.json  defect-checks/<judge>.json
+  defects.json
   report.json  report.md  report.html
 ```
 

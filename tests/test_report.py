@@ -9,8 +9,6 @@ from pathlib import Path
 import litellm
 import pytest
 
-SCORE_NAMES = ("correctness", "spec_completeness", "code_quality", "test_quality", "honesty")
-
 
 def write(path: Path, data) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -32,8 +30,8 @@ def trial(
     subagents=(),
     lines=(10, 2, 5, 0),
     checks=True,
-    ticked=2,
     verdicts=None,
+    defect_checks=None,
     summary=None,
     diff="+changed\n",
 ):
@@ -70,29 +68,41 @@ def trial(
                 )
             ),
             "checks": {"ran": True, "passed": checks},
-            "criteria_ticked": ticked,
         },
     )
     if diff is not None:
         write(t / "diff.patch", diff)
     for judge, v in (verdicts or {}).items():
         write(t / "verdicts" / f"{judge}.json", {"judge": judge, **v})
+    for judge, v in (defect_checks or {}).items():
+        write(t / "defect-checks" / f"{judge}.json", {"judge": judge, **v})
 
 
-def ok(score: int, cost=0.1, seconds=30.0) -> dict:
+def ok(*severities: str, cost=0.1, seconds=30.0) -> dict:
+    """An ok Verdict with one Finding of each severity named."""
     return {
         "status": "ok",
-        "scores": dict.fromkeys(SCORE_NAMES, score),
-        "bugs": ["b"],
+        "findings": [{"title": "t", "severity": s, "where": "", "detail": ""} for s in severities],
         "note": "n",
         "cost_usd": cost,
         "seconds": seconds,
     }
 
 
+def checked(**present: str) -> dict:
+    """An ok Defect check: `checked(D1="yes", D2="no")`."""
+    return {
+        "status": "ok",
+        "answers": {d: {"present": p, "where": "", "evidence": ""} for d, p in present.items()},
+        "cost_usd": 0.01,
+        "seconds": 6.0,
+    }
+
+
 @pytest.fixture
 def saved(experiment):
-    """A results folder with hand-chosen numbers, one failed Trial and one failed Verdict."""
+    """A results folder with hand-chosen numbers: one failed Trial, one failed Verdict,
+    one failed Defect check and two Defects."""
     settings = experiment(
         auth="subscription",
         variants=[
@@ -103,6 +113,32 @@ def saved(experiment):
     )
     folder = settings.parent / ".bench" / "results" / "demo" / "20260101-000000"
     write(folder / "experiment.json", {"name": "demo", "auth": "subscription"})
+    write(
+        folder / "defects.json",
+        {
+            "judge": "j",
+            "status": "ok",
+            "reason": None,
+            "cost_usd": 0.05,
+            "seconds": 12.0,
+            "defects": [
+                {
+                    "id": "D1",
+                    "title": "mul is missing",
+                    "description": "Look for mul.",
+                    "severity": "major",
+                    "findings": ["v1-1/j/aaa", "v1-2/j/bbb"],
+                },
+                {
+                    "id": "D2",
+                    "title": "add loses data",
+                    "description": "Look at add.",
+                    "severity": "critical",
+                    "findings": ["v2-2/j/ccc"],
+                },
+            ],
+        },
+    )
     trial(
         folder,
         "v1-1",
@@ -113,8 +149,8 @@ def saved(experiment):
         subagents=[("explore", 100.0, 160.0)],
         lines=(10, 2, 5, 0),
         checks=True,
-        ticked=2,
-        verdicts={"j": ok(6, cost=0.1, seconds=30)},
+        verdicts={"j": ok("major", "nit", "nit", cost=0.1, seconds=30)},
+        defect_checks={"j": checked(D1="yes", D2="no")},
     )
     trial(
         folder,
@@ -124,10 +160,10 @@ def saved(experiment):
         seconds=1200,
         lines=(20, 4, 15, 0),
         checks=False,
-        ticked=4,
         active=2,
         version="2.1.320",
-        verdicts={"j": ok(8, cost=0.3, seconds=90)},
+        verdicts={"j": ok("major", cost=0.3, seconds=90)},
+        defect_checks={"j": checked(D1="yes", D2="yes")},
     )
     trial(folder, "v1-3", status="failed", reason="crashed: exit code 3")
     trial(
@@ -139,13 +175,24 @@ def saved(experiment):
         verdicts={
             "j": {
                 "status": "failed",
-                "reason": "missing score honesty",
+                "reason": "finding 1 has no title",
                 "cost_usd": 0.2,
                 "seconds": 60,
             }
         },
+        defect_checks={
+            "j": {"status": "failed", "reason": "no answer for D1", "cost_usd": 0.01, "seconds": 6}
+        },
     )
-    trial(folder, "v2-2", cost=4.0, tokens=4000, seconds=300, verdicts={"j": ok(7)})
+    trial(
+        folder,
+        "v2-2",
+        cost=4.0,
+        tokens=4000,
+        seconds=300,
+        verdicts={"j": ok("critical", "nit")},
+        defect_checks={"j": checked(D1="no", D2="unsure")},
+    )
     return settings, folder
 
 
@@ -190,11 +237,8 @@ def test_averages_ranges_and_counts(saved, cli, no_models):
     assert v1["build"]["total_minutes"] == {"mean": 15.0, "min": 10.0, "max": 20.0, "n": 2}
     assert v1["build"]["wait_minutes"] == {"mean": 0.5, "min": 0.0, "max": 1.0, "n": 2}
     assert v1["output"]["prod_added"] == {"mean": 15.0, "min": 10, "max": 20, "n": 2}
-    assert v1["output"]["checks_passed"] == {"mean": 0.5, "min": 0.0, "max": 1.0, "n": 2}
-    assert v1["output"]["criteria_ticked"] == {"mean": 3.0, "min": 2, "max": 4, "n": 2}
-    assert v1["scores"]["j"]["correctness"] == {"mean": 7.0, "min": 6, "max": 8, "n": 2}
-    # The failed Verdict on v2-1 is left out of the scores, not the build numbers.
-    assert v2["scores"]["j"]["honesty"] == {"mean": 7.0, "min": 7, "max": 7, "n": 1}
+    # The failed Verdict on v2-1 is left out of the quality numbers, not the build numbers.
+    assert v2["quality"]["nit"]["n"] == 1
     assert v2["build"]["cost_usd"]["n"] == 2
 
     md = (folder / "report.md").read_text()
@@ -202,12 +246,68 @@ def test_averages_ranges_and_counts(saved, cli, no_models):
     assert "| v2 | 2/2 | 3 (2–4) |" in md
 
 
+def test_quality_counts_the_defects_each_trial_has(saved, cli, no_models):
+    settings, folder = saved
+    cli("report", settings)
+    data = json.loads((folder / "report.json").read_text())
+    v1, v2 = data["variants"]
+    # v1-3 never finished, so it counts against v1: one Trial of three passed the checks.
+    assert v1["quality"]["checks"] == {"passed": 1, "ran": 2, "trials": 3}
+    # v1-1 has the major Defect; v1-2 has the major and the critical one.
+    assert v1["quality"]["critical"] == {"mean": 0.5, "min": 0, "max": 1, "n": 2}
+    assert v1["quality"]["major"] == {"mean": 1.0, "min": 1, "max": 1, "n": 2}
+    assert v1["quality"]["nit"] == {"mean": 1.0, "min": 0, "max": 2, "n": 2}
+    # v2-1 was never checked, so only v2-2 is counted; "unsure" settles nothing.
+    assert v2["quality"]["critical"] == {"mean": 0.0, "min": 0, "max": 0, "n": 1}
+    by_trial = {t["trial"]: t["defects"] for t in data["trials"]}
+    assert by_trial["v1-2"] == {"D2": "present", "D1": "present"}
+    assert by_trial["v2-2"] == {"D2": "disputed", "D1": "absent"}
+    assert by_trial["v2-1"] == {"D2": "unchecked", "D1": "unchecked"}
+
+    md = (folder / "report.md").read_text()
+    assert "| v1 | 2/3 | 1/3 | 0.5 (0–1) | 1 | 0 | 1 (0–2) |" in md
+    assert "| v2 | 2/2 | 2/2 | 0 | 0 | 0 | 1 |" in md
+
+
+def test_each_defect_is_counted_per_variant_worst_first(saved, cli, no_models):
+    settings, folder = saved
+    cli("report", settings)
+    data = json.loads((folder / "report.json").read_text())
+    assert [d["id"] for d in data["defects"]] == ["D2", "D1"]
+    assert data["defects"][0]["variants"] == {
+        "v1": {"present": 1, "disputed": 0, "checked": 2},
+        "v2": {"present": 0, "disputed": 1, "checked": 1},
+    }
+    assert data["defects"][1]["found_by"] == ["j"]
+    md = (folder / "report.md").read_text()
+    assert "| Defect | Severity | What is wrong | Found by | v1 | v2 |" in md
+    assert "| D2 | critical | add loses data | j | 1/2 | 0/1 (1 disputed) |" in md
+    assert "| D1 | major | mul is missing | j | 2/2 | 0/1 |" in md
+
+
+def test_quality_before_any_judging(experiment, cli, no_models):
+    settings = experiment(checks=None)
+    folder = settings.parent / ".bench" / "results" / "demo" / "20260101-000000"
+    write(folder / "experiment.json", {"name": "demo"})
+    trial(folder, "alpha-1")
+    (folder / "trials/alpha-1/measurements.json").write_text(
+        json.dumps({"checks": {"ran": False, "reason": "none"}})
+    )
+    assert cli("report", settings)[0] == 0
+    md = (folder / "report.md").read_text()
+    assert "| alpha | 1/1 | – | – | – | – | – |" in md
+    assert "## Defects" not in md
+
+
 def test_failures_are_listed_and_left_out(saved, cli, no_models):
     settings, folder = saved
     cli("report", settings)
     md = (folder / "report.md").read_text()
     assert "## Failed Trials\n\n- v1-3: crashed: exit code 3" in md
-    assert "## Failed Verdicts\n\n- v2-1 by j: missing score honesty" in md
+    assert (
+        "## Failed judging\n\n- v2-1 by j: finding 1 has no title\n"
+        "- v2-1 by j (defect check): no answer for D1\n"
+    ) in md
     data = json.loads((folder / "report.json").read_text())
     assert data["failed_trials"] == [
         {"trial": "v1-3", "reason": "crashed: exit code 3", "final_message": None}
@@ -269,13 +369,15 @@ def test_judge_cost_and_time_are_apart_from_the_build(saved, cli, no_models):
             "type": "api",
             "model": "openai/gpt-5",
             "verdicts": 3,
-            "failed": 1,
-            "cost_usd": 0.7,
-            "minutes": 3.5,
+            "checks": 3,
+            "failed": 2,
+            # Four Verdicts, four Defect checks and the merge.
+            "cost_usd": 0.79,
+            "minutes": 4.1,
         }
     ]
     md = (folder / "report.md").read_text()
-    assert "| j | api | openai/gpt-5 | 3 | 1 | 0.7 | 3.5 |" in md
+    assert "| j | api | openai/gpt-5 | 3 | 3 | 2 | 0.79 | 4.1 |" in md
     # Build cost is the Trials' alone.
     assert data["variants"][0]["build"]["cost_usd"]["mean"] == 2.0
 
@@ -287,6 +389,20 @@ def test_flags(saved, cli, no_models):
     assert "Login: **subscription**" in md
     assert "**Ran alongside other Trials:** v1-2 (2 at once)" in md
     assert "**Mixed Claude Code versions:** 2.1.319, 2.1.320" in md
+
+
+def test_judges_from_the_builders_model_family_are_flagged(experiment, cli, no_models):
+    claude = {"name": "alpha", "prompt": "prompts/build.md", "model": "claude-opus-5-5"}
+    same = {"name": "agent", "type": "claude", "model": "claude-sonnet-5-5"}
+    other = {"name": "other", "type": "api", "model": "openai/gpt-5"}
+    for judges, flagged in (([same], True), ([same, other], False)):
+        settings = experiment(variants=[claude], judges=judges)
+        folder = settings.parent / ".bench" / "results" / "demo" / "20260101-000000"
+        write(folder / "experiment.json", {"name": "demo"})
+        trial(folder, "alpha-1")
+        assert cli("report", settings)[0] == 0
+        md = (folder / "report.md").read_text()
+        assert ("**Every Judge is a Claude model, like the builders.**" in md) is flagged
 
 
 def test_one_version_and_api_key_are_not_flagged(experiment, cli, no_models):
@@ -301,7 +417,7 @@ def test_one_version_and_api_key_are_not_flagged(experiment, cli, no_models):
     assert "Ran alongside" not in md and "Mixed" not in md
     # Measurements but no Verdicts and no Judges still report.
     assert "| alpha | 1/1 | 1 | 1000 | 10 |" in md
-    assert "## Scores" not in md
+    assert "## Judges" not in md and "Every Judge is a Claude model" not in md
 
 
 def md_tables(md: str) -> list[list[list[str]]]:
@@ -397,7 +513,7 @@ def test_html_shows_the_same_numbers_as_the_markdown(saved, cli, no_models):
     md = md_tables((folder / "report.md").read_text())
     parser = Tables()
     parser.feed((folder / "report.html").read_text())
-    assert len(md) == 4  # build, output, scores, judges
+    assert len(md) == 5  # build, output, quality, defects, judges
     assert parser.tables[: len(md)] == md
 
 

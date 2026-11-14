@@ -76,6 +76,11 @@ def _need_env(settings, *, judges: bool) -> None:
     missing = settings_module.required_env(settings, judges=judges)
     if missing:
         raise _Unusable("missing environment variable(s): " + ", ".join(missing))
+    if judges:
+        try:
+            settings_module.log_in_judges(settings)
+        except Exception as error:  # noqa: BLE001 - whatever LiteLLM raises, nothing can start
+            raise _Unusable(f"the GitHub Copilot login failed: {error}") from None
 
 
 def _run(settings, args, folder: Path | None = None) -> int:
