@@ -346,8 +346,10 @@ those files.
   throwaway copy of the workspace with an empty config folder. The build's
   commits are folded into uncommitted changes on the base commit, since commit
   messages can name the model. It can open files, run the checks and write a
-  test to reproduce a problem. After `clean` it records a failed Verdict saying
-  the workspace is gone.
+  test to reproduce a problem. When the workspace is not there (after `clean`,
+  or when the results folder was copied from another machine), it gets the
+  base commit with the Trial's saved diff applied instead, which leaves out
+  files git ignores. That needs `repo` to hold the base commit.
 - **API Judge** (`type: api`): one model call through LiteLLM with the plan,
   the diff against the base commit and the checks output. It works after
   `clean`.
@@ -413,7 +415,8 @@ The Trial workspaces sit apart, in the folder `experiment.json` names under
 one `<variant>-<repeat>/repo` and `config` per Trial. `clean` removes them.
 Everything else every phase reads and writes is in the results folder, so a
 finished Experiment can be judged again with a new Judge, or reported again,
-without rebuilding (an Agent Judge also needs the workspaces).
+without rebuilding (an Agent Judge without the workspaces works from the
+saved diffs).
 
 ## Why LiteLLM is pinned
 

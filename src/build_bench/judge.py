@@ -28,7 +28,7 @@ from typing import Any
 from . import lines, transcript
 from .agent import STOPPED, AgentRequest, Agents
 from .results import Trial, read_json, saved_trials, write_json
-from .run import in_parallel
+from .run import git, in_parallel, make_workspace
 from .settings import Judge, Settings, path_rules
 
 #: A Finding's severity, worst first.
@@ -95,7 +95,7 @@ def run_checks(settings: Settings, trial: Trial) -> dict:
     if not settings.checks:
         return {"ran": False, "reason": "the settings name no checks command"}
     if not trial.workspace.is_dir():
-        return {"ran": False, "reason": "the Trial's workspace is gone (removed by clean)"}
+        return {"ran": False, "reason": "the Trial's workspace is not here (removed by clean?)"}
     timeout = settings.limits.timeout_minutes
     with tempfile.TemporaryDirectory(prefix="build-bench-checks-") as tmp:
         copy = Path(tmp) / "trial"
@@ -325,15 +325,20 @@ def ask_about_trial(
     if j.type == "api":
         user = evidence(settings, folder, trial, label) + extra
         return _ask_api(settings, j, instructions, user, agent)
-    if not trial.workspace.is_dir():
-        raise JudgeFailed(
-            "the Trial's workspace is gone (removed by clean); an Agent Judge needs it"
-        )
     experiment = read_json(folder / "experiment.json") or {}
     base = experiment.get("base_sha") or settings.base
     with tempfile.TemporaryDirectory(prefix="build-bench-judge-") as tmp:
         work = Path(tmp) / label
-        shutil.copytree(trial.workspace, work, symlinks=True)
+        rebuilt = ""
+        if trial.workspace.is_dir():
+            shutil.copytree(trial.workspace, work, symlinks=True)
+        else:
+            _rebuild(settings, folder, trial, work, base)
+            rebuilt = (
+                " The folder holds only what git tracks: files git ignores (installed "
+                "dependencies, build output) are missing, so install what you need "
+                "before you run anything."
+            )
         _blind_history(work, base)
         if settings.plan_rel and (folder / "plan").is_dir():
             # Every build is held to the plan as first written, not its own edits.
@@ -353,10 +358,27 @@ def ask_about_trial(
             f"{instructions}\n\n---\n\n# Trial {label}\n\n"
             f"Your working folder is a copy of the build; change it as you like. "
             f"Every change the build made is uncommitted against the base commit "
-            f"`{base}`: see `git status` and `git diff {base}`. {FOLDED} {plan} {checks}\n\n"
+            f"`{base}`: see `git status` and `git diff {base}`.{rebuilt} {FOLDED} {plan} "
+            f"{checks}\n\n"
             f"{facts(trial)}{extra}"
         )
         return _ask_agent(settings, j, prompt, work, streams, agent)
+
+
+def _rebuild(settings: Settings, folder: Path, trial: Trial, work: Path, base: str) -> None:
+    """The build again, from the base commit and the Trial's saved diff, for a Trial
+    whose workspace is not here: `clean` removed it, or it was built on another
+    machine. Files git ignores are not in the diff, so they are not in the copy."""
+    patch = trial.folder / "diff.patch"
+    try:
+        make_workspace(settings, folder, work, base)
+        if _text(patch).strip():
+            git(work, "apply", "--index", "--whitespace=nowarn", str(patch))
+    except (RuntimeError, OSError) as error:
+        raise JudgeFailed(
+            f"the Trial's workspace is not here ({trial.workspace}) and could not be "
+            f"rebuilt from its saved diff: {error}"
+        ) from error
 
 
 def _blind_history(repo: Path, base: str) -> None:
