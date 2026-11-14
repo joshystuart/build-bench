@@ -345,13 +345,13 @@ def git(repo: Path, *args: str, env: dict | None = None) -> str:
     return done.stdout
 
 
-def make_workspace(settings: Settings, folder: Path, repo: Path) -> None:
+def make_workspace(settings: Settings, folder: Path, repo: Path, base: str | None = None) -> None:
     """A repository holding only the base commit and its history, with no remote,
     and the plan copied in. Nothing past the base (later commits, branches, tags,
     reflogs) is fetched, so the agent cannot read the finished work."""
     repo.mkdir(parents=True)
     git(repo, "init", "--quiet")
-    base = settings.base_sha or settings.base
+    base = base or settings.base_sha or settings.base
     # Fetching a commit that is not a branch tip needs protocol v2 (git >= 2.26).
     git(
         repo,

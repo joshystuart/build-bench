@@ -658,11 +658,26 @@ def test_ctrl_c_stops_an_agent_judge_quietly(experiment, fake, cli):
     assert found["reason"] == "stopped: build-bench was stopped (Ctrl+C)"
 
 
-def test_agent_judge_reports_a_removed_workspace(experiment, fake, cli):
+def test_agent_judge_rebuilds_a_removed_workspace(experiment, fake, cli):
     settings = built(experiment, cli, judges=[agent_judge()])
     assert cli("clean", settings)[0] == 0
+    code, out, _ = cli("judge", settings)
+    assert code == 0, out
+    assert verdict(settings, "secretvariant-1", "blind-agent")["status"] == "ok"
+    for call in fake.calls(judge=True, kind="find"):
+        # The build's changes, committed or not, are back from the saved diff.
+        assert {"fake_committed.txt", "fake_uncommitted.txt"} <= set(call["cwd_files"])
+        assert "- [ ] add mul" in call["plan_text"]
+        assert "files git ignores" in call["prompt"]
+        assert "fake commit by" not in json.dumps([call["git_log"], call["git_reflog"]])
+
+
+def test_agent_judge_reports_a_workspace_it_cannot_rebuild(experiment, fake, cli):
+    settings = built(experiment, cli, judges=[agent_judge()])
+    assert cli("clean", settings)[0] == 0
+    patch = results_folder(settings) / "trials" / "secretvariant-1" / "diff.patch"
+    patch.write_text("not a diff\n")
     assert cli("judge", settings)[0] == 1
     found = verdict(settings, "secretvariant-1", "blind-agent")
     assert found["status"] == "failed"
-    assert "workspace is gone" in found["reason"]
-    assert fake.calls(judge=True) == []
+    assert "could not be rebuilt from its saved diff" in found["reason"]
