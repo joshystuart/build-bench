@@ -46,12 +46,12 @@
 {% endfor %}
 </ul>
 {% endif %}
-{% for s in sections %}
-<h2>{{ s.title }}</h2>
-{% if s.note %}
-<p class='muted'>{{ s.note }}</p>
+{% for t in tables %}
+<h2>{{ t.title }}</h2>
+{% if t.note %}
+<p class='muted'>{{ t.note }}</p>
 {% endif %}
-{{ table(s.table) }}
+{{ table(t) }}
 {% endfor %}
 {% if timeline %}
 {% set t = timeline %}
@@ -107,11 +107,11 @@ the same time scale. Hover or tab to a row to read it.</p>
 </table></div></details>
 </figure>
 {% endif %}
-{% if failed_verdicts %}
-<h2>Failed Verdicts</h2>
+{% if failed_judging %}
+<h2>Failed judging</h2>
 <ul>
-{% for f in failed_verdicts %}
-<li>{{ f.trial }} by {{ f.judge }}: {{ f.reason }}</li>
+{% for line in failed_judging %}
+<li>{{ line }}</li>
 {% endfor %}
 </ul>
 {% endif %}

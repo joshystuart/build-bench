@@ -16,7 +16,7 @@ from pathlib import Path
 
 import yaml
 
-from .agent import STOPPED, Agent, AgentRequest, ClaudeCode
+from .agent import COPILOT_LOGIN, STOPPED, AgentRequest, Agents, Headless
 from .progress import Live
 from .results import (
     Trial,
@@ -27,7 +27,7 @@ from .results import (
     workspaces,
     write_json,
 )
-from .settings import DEFAULT_AUTH_ENV, Settings
+from .settings import Settings
 
 WARNING = """\
 WARNING: build-bench starts coding agents with every permission check bypassed.
@@ -43,7 +43,7 @@ class RunError(Exception):
     pass
 
 
-def in_parallel(work, items: list, concurrency: int, agent: Agent, say) -> None:
+def in_parallel(work, items: list, concurrency: int, agent: Agents, say) -> None:
     """Call `work` on each item, `concurrency` at a time.
 
     On Ctrl+C no more items start, the running agents are stopped, and each
@@ -82,17 +82,25 @@ def _wait(futures: list) -> None:
         pass
 
 
-def preflight(settings: Settings, agent: Agent) -> str:
-    """Check what must hold before the first Trial; return the agent's version."""
-    try:
-        version = agent.version()
-    except (FileNotFoundError, RuntimeError) as error:
-        raise RunError(str(error)) from None
-    if settings.claude_version and version != settings.claude_version:
-        raise RunError(
-            f"Claude Code {version} is installed but the settings pin {settings.claude_version}"
-        )
-    return version
+def preflight(settings: Settings, agents: Agents) -> dict[str, str]:
+    """Check what must hold before the first agent starts; return each agent's version."""
+    versions = {}
+    for kind in settings.agents(judges=False):
+        agent = agents.of(kind)
+        try:
+            versions[kind] = agent.version()
+        except (FileNotFoundError, RuntimeError) as error:
+            raise RunError(str(error)) from None
+        pin = settings.version_pin(kind)
+        if pin and versions[kind] != pin:
+            raise RunError(f"{agent.name} {versions[kind]} is installed but the settings pin {pin}")
+    return versions
+
+
+def secrets(settings: Settings) -> list[str]:
+    """Every login value an agent may be handed, so none is left in a saved file."""
+    names = [settings.auth_variable] if settings.auth else []
+    return [os.environ[n] for n in [*names, *COPILOT_LOGIN] if os.environ.get(n)]
 
 
 def inherited_instructions(folder: Path) -> list[Path]:
@@ -120,14 +128,15 @@ def save_skills(settings: Settings, folder: Path) -> None:
             shutil.copytree(skill, saved / skill.name)
 
 
-def start_folder(settings: Settings, folder: Path, version: str) -> None:
+def start_folder(settings: Settings, folder: Path, versions: dict[str, str]) -> None:
     """Save the Experiment's own files the first time a results folder is used."""
     save_skills(settings, folder)
     if (folder / "experiment.json").exists():
         experiment = read_json(folder / "experiment.json")
-        versions = experiment.setdefault("claude_versions", [])
-        if version not in versions:
-            versions.append(version)
+        for kind, version in versions.items():
+            seen = experiment.setdefault(f"{kind}_versions", [])
+            if version not in seen:
+                seen.append(version)
         write_json(folder / "experiment.json", experiment)
         return
     assert settings.path is not None
@@ -145,8 +154,8 @@ def start_folder(settings: Settings, folder: Path, version: str) -> None:
             "plan": settings.plan_rel,
             "workspaces": str(new_workspaces(folder)),
             "auth": settings.auth,
-            "claude_version": version,
-            "claude_versions": [version],
+            **{f"{kind}_version": version for kind, version in versions.items()},
+            **{f"{kind}_versions": [version] for kind, version in versions.items()},
             "started_at": time.time(),
             # The parsed settings as data; the file never holds secrets, only
             # the names of the variables that do.
@@ -159,7 +168,7 @@ def run(
     settings: Settings,
     folder: Path,
     *,
-    agent: Agent | None = None,
+    agent: Agents | None = None,
     say=print,
     live: bool = False,
 ) -> list[Trial]:
@@ -168,11 +177,10 @@ def run(
     With `live`, a progress display is redrawn below the printed lines while
     the Trials run; it needs a terminal.
     """
-    agent = agent or ClaudeCode()
-    secret = os.environ[settings.auth_variable]
-    version = preflight(settings, agent)
+    agent = agent or Agents()
+    versions = preflight(settings, agent)
     say(WARNING)
-    start_folder(settings, folder, version)
+    start_folder(settings, folder, versions)
     inherited = inherited_instructions(workspaces(folder) or folder)
     if inherited:
         say(
@@ -197,7 +205,7 @@ def run(
     def one(trial: Trial) -> None:
         with lock:
             tell(f"[start] {trial.id}")
-        status = build_trial(settings, folder, trial, agent, version, secret)
+        status = build_trial(settings, folder, trial, agent, versions)
         with lock:
             if status["status"] == "finished":
                 tell(f"[done]  {trial.id} finished in {_minutes(status['agent_seconds'])}")
@@ -217,8 +225,10 @@ def _minutes(seconds: float | None) -> str:
 
 
 def build_trial(
-    settings: Settings, folder: Path, trial: Trial, agent: Agent, version: str, secret: str
+    settings: Settings, folder: Path, trial: Trial, agents: Agents, versions: dict[str, str]
 ) -> dict:
+    variant = next(v for v in settings.variants if v.name == trial.variant)
+    agent = agents.of(variant.agent)
     if trial.folder.exists():
         # A failed Trial is run again from nothing, never patched up.
         shutil.rmtree(trial.folder)
@@ -231,25 +241,28 @@ def build_trial(
         "repeat": trial.repeat,
         "status": "running",
         "reason": None,
-        "claude_version": version,
-        "auth": settings.auth,
+        "agent": variant.agent,
+        "agent_version": versions[variant.agent],
+        # Kept under its first name too, which older reports read.
+        "claude_version": versions.get("claude") if variant.agent == "claude" else None,
+        "auth": settings.auth if variant.agent == "claude" else None,
         "agent_seconds": None,
     }
     write_json(trial.folder / "status.json", status)
     try:
-        status.update(_build(settings, folder, trial, agent, secret))
+        status.update(_build(settings, folder, trial, agent))
     except Exception as error:  # noqa: BLE001 - any surprise fails this Trial only
         status.update(status="failed", reason=f"crashed: {type(error).__name__}: {error}")
     if status["status"] != "finished" and agent.stopped:
         # Whatever broke (a pre_build step or git also got the Ctrl+C), the
         # stop is why; the Trial runs again on resume.
         status.update(status="failed", reason=STOPPED)
-    _redact(trial.folder, secret)
+    _redact(trial.folder, secrets(settings))
     write_json(trial.folder / "status.json", status)
     return status
 
 
-def _build(settings: Settings, folder: Path, trial: Trial, agent: Agent, secret: str) -> dict:
+def _build(settings: Settings, folder: Path, trial: Trial, agent: Headless) -> dict:
     variant = next(v for v in settings.variants if v.name == trial.variant)
     repo = trial.workspace
     config = trial.home / "config"
@@ -296,7 +309,7 @@ def _build(settings: Settings, folder: Path, trial: Trial, agent: Agent, secret:
         session_id=str(uuid.uuid4()),
         stdout_path=trial.folder / "stream.jsonl",
         stderr_path=trial.folder / "stderr.log",
-        auth=(DEFAULT_AUTH_ENV[settings.auth], secret),
+        auth=settings.agent_login(variant.agent),
         timeout_minutes=settings.limits.timeout_minutes,
         max_budget_usd=settings.limits.max_budget_usd,
     )
@@ -312,8 +325,8 @@ def _build(settings: Settings, folder: Path, trial: Trial, agent: Agent, secret:
         },
     )
     save_transcript(agent, request, trial.folder / "transcript")
-    if result.result and isinstance(result.result.get("result"), str):
-        (trial.folder / "summary.md").write_text(result.result["result"])
+    if result.summary is not None:
+        (trial.folder / "summary.md").write_text(result.summary)
     save_diffs(settings, folder, trial)
     if result.failure:
         return {"status": "failed", "reason": result.failure, "agent_seconds": result.seconds}
@@ -355,7 +368,7 @@ def make_workspace(settings: Settings, folder: Path, repo: Path) -> None:
         shutil.copytree(folder / "plan", repo / settings.plan_rel, dirs_exist_ok=True)
 
 
-def save_transcript(agent: Agent, request: AgentRequest, into: Path) -> None:
+def save_transcript(agent: Headless, request: AgentRequest, into: Path) -> None:
     main, subagents = agent.transcript(request)
     if main is None:
         return
@@ -418,9 +431,10 @@ def save_diffs(settings: Settings, folder: Path, trial: Trial) -> None:
     (trial.folder / "plan.diff").write_text(plan_diff)
 
 
-def _redact(trial_folder: Path, secret: str) -> None:
-    """Belt and braces: no saved file may hold the login's value."""
-    if len(secret) < 8:
+def _redact(trial_folder: Path, hidden: list[str]) -> None:
+    """Belt and braces: no saved file may hold a login's value."""
+    hidden = [secret for secret in hidden if len(secret) >= 8]
+    if not hidden:
         return
     top = [p for p in trial_folder.iterdir() if p.name != "workspace"]
     files = [f for p in top for f in ([p] if p.is_file() else p.rglob("*")) if f.is_file()]
@@ -429,8 +443,10 @@ def _redact(trial_folder: Path, secret: str) -> None:
             text = path.read_text()
         except (UnicodeDecodeError, OSError):
             continue
-        if secret in text:
-            path.write_text(text.replace(secret, "[redacted]"))
+        if any(secret in text for secret in hidden):
+            for secret in hidden:
+                text = text.replace(secret, "[redacted]")
+            path.write_text(text)
 
 
 def record_overlap(folder: Path) -> None:

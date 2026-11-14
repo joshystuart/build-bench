@@ -1,7 +1,16 @@
-"""`judge`: measure each finished Trial, then ask each Judge for a Verdict."""
+"""`judge`: measure each finished Trial, then find, merge and check its Defects.
+
+1. Find: each Judge reviews each Trial and lists its Findings (a Verdict).
+2. Merge: one Judge groups every Finding worse than a nit into the Experiment's
+   distinct Defects, saved in `defects.json`.
+3. Check: each Judge says, for each Trial, which of those Defects it has.
+
+Every step skips work already saved.
+"""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -17,29 +26,37 @@ from pathlib import Path
 from typing import Any
 
 from . import lines, transcript
-from .agent import STOPPED, AgentRequest, ClaudeCode
+from .agent import STOPPED, AgentRequest, Agents
 from .results import Trial, read_json, saved_trials, write_json
 from .run import in_parallel
-from .settings import DEFAULT_AUTH_ENV, Judge, Settings, path_rules
+from .settings import Judge, Settings, path_rules
 
-SCORES = ("correctness", "spec_completeness", "code_quality", "test_quality", "honesty")
+#: A Finding's severity, worst first.
+SEVERITIES = ("critical", "major", "minor", "nit")
+#: Nits are counted per Trial but never merged into Defects or checked.
+MERGED = SEVERITIES[:3]
+PRESENT = ("yes", "no", "unsure")
 #: Judges are blind, so the build's own commits (whose messages can name the
-#: model) are never shown. Say so, or a Judge reads the summary's commit ids as lies.
+#: model) are never shown. Say so, or a Judge counts the missing commits against it.
 FOLDED = (
     "Whether the build committed its work is hidden from you on purpose: its commits "
-    "are folded into these changes, so commit ids or messages its summary mentions "
-    "will not be found. Do not count that against the build."
+    "are folded into these changes. Do not count that against the build."
 )
 #: Checks output longer than this is cut to its end before a Judge sees it.
 CHECKS_LIMIT = 30_000
 
 
-def judge(settings: Settings, folder: Path, say=print, agent: ClaudeCode | None = None) -> bool:
-    """Measure, then judge. Returns False if any Verdict failed."""
+def judge(settings: Settings, folder: Path, say=print, agent: Agents | None = None) -> bool:
+    """Measure, then find, merge and check. Returns False if any step failed."""
+    agent = agent or Agents()
     trials = saved_trials(folder)
     for trial in trials:
         measure_trial(settings, folder, trial, say)
-    return run_judges(settings, folder, trials, say, agent or ClaudeCode())
+    ready = [t for t in trials if t.finished and (t.folder / "measurements.json").exists()]
+    found = find(settings, folder, ready, say, agent)
+    merged = merge(settings, folder, ready, say, agent)
+    checked = check(settings, folder, ready, say, agent)
+    return found and merged and checked
 
 
 # --- Automatic measurements -------------------------------------------------
@@ -63,7 +80,6 @@ def measure_trial(settings: Settings, folder: Path, trial: Trial, say=print) -> 
     test_paths, ignore_paths, rust_inline = path_rules(settings)
     diff = _text(trial.folder / "diff-full.patch") or _text(trial.folder / "diff.patch")
     measured["lines"] = lines.count_lines(diff, test_paths, ignore_paths, rust_inline)
-    measured["criteria_ticked"] = lines.criteria_ticked(_text(trial.folder / "plan.diff"))
     measured["checks"] = run_checks(settings, trial)
     write_json(target, measured)
     say(f"[measured] {trial.id}")
@@ -109,15 +125,37 @@ def run_checks(settings: Settings, trial: Trial) -> dict:
     }
 
 
-# --- Verdicts ----------------------------------------------------------------
+# --- Asking a Judge ------------------------------------------------------------
 
 
 class VerdictError(Exception):
+    """A Judge's reply cannot be used."""
+
+
+class JudgeFailed(Exception):
     pass
 
 
-def parse_verdict(reply: str) -> dict:
-    """The verdict JSON from a Judge's reply, checked against the fixed shape."""
+def shipped_prompt(name: str) -> str:
+    return (resources.files("build_bench") / "prompts" / f"{name}.md").read_text()
+
+
+def judge_prompt(j: Judge) -> str:
+    return j.prompt.read_text() if j.prompt is not None else shipped_prompt("judge")
+
+
+def _sha(text: str) -> str:
+    return hashlib.sha256(text.encode()).hexdigest()[:12]
+
+
+def _str(value: Any) -> str:
+    if value is None:
+        return ""
+    return value.strip() if isinstance(value, str) else json.dumps(value)
+
+
+def reply_json(reply: str, key: str) -> dict:
+    """The last JSON object in a Judge's reply that holds `key`."""
     candidates = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", reply, flags=re.S)
     decoder = json.JSONDecoder()
     if not candidates:
@@ -126,140 +164,57 @@ def parse_verdict(reply: str) -> dict:
                 value, _ = decoder.raw_decode(reply[i:])
             except json.JSONDecodeError:
                 continue
-            if isinstance(value, dict) and "scores" in value:
+            if isinstance(value, dict) and key in value:
                 candidates.append(json.dumps(value))
     for text in reversed(candidates):
         try:
             value = json.loads(text)
         except json.JSONDecodeError:
             continue
-        if isinstance(value, dict) and "scores" in value:
-            return check_verdict(value)
-    raise VerdictError("the reply holds no verdict JSON with scores")
+        if isinstance(value, dict) and key in value:
+            return value
+    raise VerdictError(f"the reply holds no JSON object with {key}")
 
 
-def check_verdict(value: dict) -> dict:
-    scores = value.get("scores")
-    if not isinstance(scores, dict):
-        raise VerdictError("scores is not an object")
-    problems = []
-    clean = {}
-    for name in SCORES:
-        score = scores.get(name)
-        if score is None:
-            problems.append(f"missing score {name}")
-        elif isinstance(score, bool) or not isinstance(score, int | float) or score != int(score):
-            problems.append(f"score {name} is not a whole number: {score!r}")
-        elif not 1 <= score <= 10:
-            problems.append(f"score {name} is {score}, outside 1 to 10")
-        else:
-            clean[name] = int(score)
-    if problems:
-        raise VerdictError("; ".join(problems))
-    bugs = value.get("bugs", [])
-    if not isinstance(bugs, list):
-        raise VerdictError("bugs is not a list")
-    note = value.get("note", "")
-    return {
-        "scores": clean,
-        "bugs": [b if isinstance(b, str) else json.dumps(b) for b in bugs],
-        "note": note if isinstance(note, str) else json.dumps(note),
-    }
-
-
-def judge_prompt(j: Judge) -> str:
-    if j.prompt is not None:
-        return j.prompt.read_text()
-    return (resources.files("build_bench") / "prompts" / "judge.md").read_text()
-
-
-def run_judges(
-    settings: Settings, folder: Path, trials: list[Trial], say, agent: ClaudeCode
-) -> bool:
-    todo = []
-    for j in settings.judges:
-        for trial in trials:
-            if not (trial.finished and (trial.folder / "measurements.json").exists()):
-                continue
-            saved = read_json(trial.folder / "verdicts" / f"{j.name}.json")
-            if saved and saved.get("status") == "ok":
-                continue
-            todo.append((j, trial))
-    lock = threading.Lock()
-
-    def one(task: tuple[Judge, Trial]) -> dict:
-        j, trial = task
-        verdict = judge_one(settings, folder, j, trial, agent)
-        with lock:
-            if verdict["status"] == "ok":
-                say(f"[verdict] {trial.id} by {j.name}")
-            else:
-                say(f"[verdict failed] {trial.id} by {j.name}: {verdict['reason']}")
-        return verdict
-
-    in_parallel(one, todo, settings.concurrency, agent, say)
-
-    failed = [
-        (j, t)
-        for j in settings.judges
-        for t in trials
-        if t.finished
-        and (read_json(t.folder / "verdicts" / f"{j.name}.json") or {}).get("status") != "ok"
-    ]
-    return not failed
-
-
-def judge_one(settings: Settings, folder: Path, j: Judge, trial: Trial, agent: ClaudeCode) -> dict:
-    label = f"trial-{secrets.token_hex(3)}"
-    started = time.time()
-    verdict: dict[str, Any] = {
-        "judge": j.name,
-        "type": j.type,
-        "model": j.model,
-        "label": label,
-        "status": "failed",
-        "reason": None,
-        "cost_usd": None,
-        "seconds": None,
-    }
-    verdicts = trial.folder / "verdicts"
-    verdicts.mkdir(exist_ok=True)
-    try:
-        if j.type == "api":
-            reply, cost = _ask_api(settings, folder, j, trial, label, agent)
-        else:
-            reply, cost = _ask_agent(settings, folder, j, trial, label, agent)
-        verdict["cost_usd"] = cost
-        (verdicts / f"{j.name}.reply.md").write_text(reply)
-        verdict.update(parse_verdict(reply), status="ok")
-    except (VerdictError, JudgeFailed, TimeoutError) as error:
-        verdict["reason"] = str(error) or type(error).__name__
-    except Exception as error:  # noqa: BLE001 - a broken call fails this Verdict only
-        verdict["reason"] = f"{type(error).__name__}: {error}"
-    verdict["seconds"] = round(time.time() - started, 3)
-    write_json(verdicts / f"{j.name}.json", verdict)
-    return verdict
-
-
-class JudgeFailed(Exception):
-    pass
+def facts(trial: Trial) -> str:
+    """What build-bench has already measured, so no Judge spends time recounting it."""
+    measured = read_json(trial.folder / "measurements.json") or {}
+    counts = measured.get("lines") or {}
+    checks = measured.get("checks") or {}
+    if not checks.get("ran"):
+        ran = f"The checks were not run: {checks.get('reason')}."
+    elif checks.get("passed"):
+        ran = f"The checks (`{checks['command']}`) passed."
+    elif checks.get("timed_out"):
+        ran = f"The checks (`{checks['command']}`) timed out."
+    else:
+        ran = f"The checks (`{checks['command']}`) failed with exit code {checks['exit_code']}."
+    return (
+        "## Already measured\n\n"
+        f"- Production lines: {counts.get('prod_added', 0)} added, "
+        f"{counts.get('prod_removed', 0)} removed. Test lines: "
+        f"{counts.get('test_added', 0)} added, {counts.get('test_removed', 0)} removed.\n"
+        f"- {ran}\n"
+    )
 
 
 def evidence(settings: Settings, folder: Path, trial: Trial, label: str) -> str:
-    """What an API Judge reads: plan, diff, checks output and final summary."""
+    """What an API Judge reads: the plan as first written, the diff and the checks output.
+
+    The build's own summary and its changes to the plan are left out: both can
+    name the Variant, and a Judge should hold every build to the same plan.
+    """
     parts = [f"# Trial {label}\n"]
     plan = folder / "plan"
     if plan.is_dir():
         parts.append(f"## The plan (at `{settings.plan_rel}` in the repository)\n")
         for f in sorted(p for p in plan.rglob("*") if p.is_file()):
             parts.append(f"### {f.relative_to(plan).as_posix()}\n\n{_text(f)}\n")
-        plan_diff = _text(trial.folder / "plan.diff")
-        if plan_diff.strip():
-            parts.append(f"## Changes the build made to the plan\n\n```diff\n{plan_diff}```\n")
     else:
         parts.append("## The plan\n\nThere is no plan folder; the task was given as a prompt.\n")
     diff = _text(trial.folder / "diff.patch")
     parts.append(f"## Diff against the base commit\n\n{FOLDED}\n\n```diff\n{diff}```\n")
+    parts.append(facts(trial))
     checks = (read_json(trial.folder / "measurements.json") or {}).get("checks") or {}
     if checks.get("ran"):
         output = _text(trial.folder / "checks.log")
@@ -269,14 +224,10 @@ def evidence(settings: Settings, folder: Path, trial: Trial, label: str) -> str:
             f"## Checks output\n\nCommand: `{checks['command']}`, exit code "
             f"{checks['exit_code']}.\n\n```\n{output}\n```\n"
         )
-    else:
-        parts.append(f"## Checks output\n\nThe checks were not run: {checks.get('reason')}.\n")
-    summary = _text(trial.folder / "summary.md") or "(the build wrote no final summary)"
-    parts.append(f"## The build's final summary\n\n{summary}\n")
     return "\n".join(parts)
 
 
-def _call(fn, timeout: float | None, agent: ClaudeCode):
+def _call(fn, timeout: float | None, agent: Agents):
     """Run ``fn`` and give up after ``timeout`` seconds, or once build-bench is
     stopped, leaving it behind."""
     box: dict[str, Any] = {}
@@ -302,7 +253,7 @@ def _call(fn, timeout: float | None, agent: ClaudeCode):
 
 
 def _ask_api(
-    settings: Settings, folder: Path, j: Judge, trial: Trial, label: str, agent: ClaudeCode
+    settings: Settings, j: Judge, system: str, user: str, agent: Agents
 ) -> tuple[str, float | None]:
     import litellm
 
@@ -311,8 +262,8 @@ def _ask_api(
     request: dict[str, Any] = {
         "model": j.model,
         "messages": [
-            {"role": "system", "content": judge_prompt(j)},
-            {"role": "user", "content": evidence(settings, folder, trial, label)},
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
         ],
     }
     if timeout:
@@ -332,58 +283,80 @@ def _ask_api(
 
 
 def _ask_agent(
-    settings: Settings, folder: Path, j: Judge, trial: Trial, label: str, agent: ClaudeCode
+    settings: Settings, j: Judge, prompt: str, work: Path, streams: Path, agent: Agents
 ) -> tuple[str, float | None]:
+    """Start an Agent Judge in `work` with an empty config folder beside it.
+    `streams` is the path its output files are named after."""
+    limits = settings.judge_limits(j)
+    config = work.parent / "config"
+    config.mkdir()
+    streams.parent.mkdir(parents=True, exist_ok=True)
+    request = AgentRequest(
+        prompt=prompt,
+        cwd=work,
+        config_dir=config,
+        model=j.model,
+        effort=j.effort,
+        session_id=str(uuid.uuid4()),
+        stdout_path=streams.with_name(streams.name + ".stream.jsonl"),
+        stderr_path=streams.with_name(streams.name + ".stderr.log"),
+        auth=settings.agent_login(j.type),
+        timeout_minutes=limits.timeout_minutes,
+        max_budget_usd=limits.max_budget_usd,
+    )
+    result = agent.of(j.type).start(request)
+    if result.failure:
+        raise JudgeFailed(result.failure)
+    return result.summary or "", result.cost_usd
+
+
+def ask_about_trial(
+    settings: Settings,
+    folder: Path,
+    j: Judge,
+    trial: Trial,
+    label: str,
+    instructions: str,
+    extra: str,
+    streams: Path,
+    agent: Agents,
+) -> tuple[str, float | None]:
+    """Ask one Judge about one Trial, shown under `label`. `extra` follows the evidence."""
+    if j.type == "api":
+        user = evidence(settings, folder, trial, label) + extra
+        return _ask_api(settings, j, instructions, user, agent)
     if not trial.workspace.is_dir():
         raise JudgeFailed(
             "the Trial's workspace is gone (removed by clean); an Agent Judge needs it"
         )
-    limits = settings.judge_limits(j)
     experiment = read_json(folder / "experiment.json") or {}
     base = experiment.get("base_sha") or settings.base
     with tempfile.TemporaryDirectory(prefix="build-bench-judge-") as tmp:
         work = Path(tmp) / label
         shutil.copytree(trial.workspace, work, symlinks=True)
         _blind_history(work, base)
-        config = Path(tmp) / "config"
-        config.mkdir()
+        if settings.plan_rel and (folder / "plan").is_dir():
+            # Every build is held to the plan as first written, not its own edits.
+            shutil.rmtree(work / settings.plan_rel, ignore_errors=True)
+            shutil.copytree(folder / "plan", work / settings.plan_rel, symlinks=True)
         checks = (
             f"The project's checks command is `{settings.checks}`."
             if settings.checks
             else "The settings name no checks command; find and run the project's own tests."
         )
         plan = (
-            f"The plan is in `{settings.plan_rel}/`."
+            f"The plan is in `{settings.plan_rel}/`, as it was before the build started."
             if settings.plan_rel
             else "There is no plan folder; the task was given as a prompt."
         )
-        summary = _text(trial.folder / "summary.md") or "(the build wrote no final summary)"
         prompt = (
-            f"{judge_prompt(j)}\n\n---\n\n# Trial {label}\n\n"
+            f"{instructions}\n\n---\n\n# Trial {label}\n\n"
             f"Your working folder is a copy of the build; change it as you like. "
             f"Every change the build made is uncommitted against the base commit "
             f"`{base}`: see `git status` and `git diff {base}`. {FOLDED} {plan} {checks}\n\n"
-            f"## The build's final summary\n\n{summary}\n"
+            f"{facts(trial)}{extra}"
         )
-        request = AgentRequest(
-            prompt=prompt,
-            cwd=work,
-            config_dir=config,
-            model=j.model,
-            effort=j.effort,
-            session_id=str(uuid.uuid4()),
-            stdout_path=trial.folder / "verdicts" / f"{j.name}.stream.jsonl",
-            stderr_path=trial.folder / "verdicts" / f"{j.name}.stderr.log",
-            auth=(DEFAULT_AUTH_ENV[settings.auth], os.environ[settings.auth_variable]),
-            timeout_minutes=limits.timeout_minutes,
-            max_budget_usd=limits.max_budget_usd,
-        )
-        result = agent.start(request)
-    if result.failure:
-        raise JudgeFailed(result.failure)
-    reply = (result.result or {}).get("result") or ""
-    cost = (result.result or {}).get("total_cost_usd")
-    return reply, float(cost) if cost is not None else None
+        return _ask_agent(settings, j, prompt, work, streams, agent)
 
 
 def _blind_history(repo: Path, base: str) -> None:
@@ -398,3 +371,373 @@ def _blind_history(repo: Path, base: str) -> None:
     for leftover in ("ORIG_HEAD", "COMMIT_EDITMSG"):
         (repo / ".git" / leftover).unlink(missing_ok=True)
     git("prune", "--expire=now")
+
+
+def _attempt(record: dict, target: Path, ask, parse) -> dict:
+    """Ask, parse the reply into `record` and save it at `target`, whatever happens.
+    Cost and time are added to what `record` already holds."""
+    started = time.time()
+    spent, seconds = record.get("cost_usd"), record.get("seconds") or 0.0
+    record.update(status="failed", reason=None)
+    try:
+        reply, cost = ask()
+        if cost is not None:
+            record["cost_usd"] = (spent or 0.0) + cost
+        target.with_suffix(".reply.md").write_text(reply)
+        record.update(parse(reply), status="ok")
+    except (VerdictError, JudgeFailed, TimeoutError) as error:
+        record["reason"] = str(error) or type(error).__name__
+    except Exception as error:  # noqa: BLE001 - a broken call fails this step only
+        record["reason"] = f"{type(error).__name__}: {error}"
+    record["seconds"] = round(seconds + time.time() - started, 3)
+    write_json(target, record)
+    return record
+
+
+def _record(j: Judge, **more: Any) -> dict[str, Any]:
+    return {
+        "judge": j.name,
+        "type": j.type,
+        "model": j.model,
+        "status": "failed",
+        "reason": None,
+        "cost_usd": None,
+        "seconds": None,
+        **more,
+    }
+
+
+def _ok(path: Path) -> bool:
+    return (read_json(path) or {}).get("status") == "ok"
+
+
+# --- Find: one Verdict per Judge and Trial -------------------------------------
+
+
+def check_findings(value: dict) -> dict:
+    """A Verdict's Findings and note, checked against the fixed shape."""
+    findings = value.get("findings")
+    if not isinstance(findings, list):
+        raise VerdictError("findings is not a list")
+    problems, clean = [], []
+    for n, finding in enumerate(findings, 1):
+        if not isinstance(finding, dict):
+            problems.append(f"finding {n} is not an object")
+            continue
+        title, severity = finding.get("title"), finding.get("severity")
+        if not isinstance(title, str) or not title.strip():
+            problems.append(f"finding {n} has no title")
+        if severity not in SEVERITIES:
+            problems.append(
+                f"finding {n} has severity {severity!r}, not one of {', '.join(SEVERITIES)}"
+            )
+        clean.append(
+            {
+                "title": _str(title),
+                "severity": severity,
+                "where": _str(finding.get("where")),
+                "detail": _str(finding.get("detail")),
+                "reproduced": finding.get("reproduced") is True,
+            }
+        )
+    if problems:
+        raise VerdictError("; ".join(problems))
+    return {"findings": clean, "note": _str(value.get("note"))}
+
+
+def find(settings: Settings, folder: Path, trials: list[Trial], say, agent: Agents) -> bool:
+    """Ask each Judge for a Verdict on each Trial that has none from its current prompt."""
+    todo = []
+    for j in settings.judges:
+        sha = _sha(judge_prompt(j))
+        for trial in trials:
+            saved = read_json(trial.folder / "verdicts" / f"{j.name}.json") or {}
+            if saved.get("status") != "ok" or saved.get("prompt_sha") != sha:
+                todo.append((j, trial))
+    lock = threading.Lock()
+
+    def one(task: tuple[Judge, Trial]) -> None:
+        j, trial = task
+        verdict = find_one(settings, folder, j, trial, agent)
+        with lock:
+            if verdict["status"] == "ok":
+                say(f"[verdict] {trial.id} by {j.name}")
+            else:
+                say(f"[verdict failed] {trial.id} by {j.name}: {verdict['reason']}")
+
+    in_parallel(one, todo, settings.concurrency, agent, say)
+    return all(
+        _ok(t.folder / "verdicts" / f"{j.name}.json") for j in settings.judges for t in trials
+    )
+
+
+def find_one(settings: Settings, folder: Path, j: Judge, trial: Trial, agent: Agents) -> dict:
+    label = f"trial-{secrets.token_hex(3)}"
+    instructions = judge_prompt(j)
+    target = trial.folder / "verdicts" / f"{j.name}.json"
+    target.parent.mkdir(exist_ok=True)
+    return _attempt(
+        _record(j, label=label, prompt_sha=_sha(instructions)),
+        target,
+        lambda: ask_about_trial(
+            settings, folder, j, trial, label, instructions, "", target.with_suffix(""), agent
+        ),
+        lambda reply: check_findings(reply_json(reply, "findings")),
+    )
+
+
+# --- Merge: the Experiment's distinct Defects -----------------------------------
+
+
+def reported(trials: list[Trial]) -> dict[str, dict]:
+    """Every Finding worse than a nit in a saved Verdict, by a key that names its
+    Trial and Judge and changes when the Finding does."""
+    found = {}
+    for trial in trials:
+        for path in sorted((trial.folder / "verdicts").glob("*.json")):
+            verdict = read_json(path) or {}
+            if verdict.get("status") != "ok":
+                continue
+            for finding in verdict.get("findings") or []:
+                if finding.get("severity") in MERGED:
+                    text = json.dumps([finding["title"], finding["where"], finding["detail"]])
+                    found[f"{trial.id}/{path.stem}/{_sha(text)}"] = finding
+    return found
+
+
+def merge_judge(settings: Settings) -> Judge | None:
+    if not settings.judges:
+        return None
+    named = [j for j in settings.judges if j.name == settings.merge_judge]
+    return named[0] if named else settings.judges[0]
+
+
+def merge(settings: Settings, folder: Path, trials: list[Trial], say, agent: Agents) -> bool:
+    """Place every Finding not yet in a Defect: into a Defect that already
+    exists, which keeps its id, or into a new one."""
+    j = merge_judge(settings)
+    if j is None:
+        return True
+    target = folder / "defects.json"
+    saved = read_json(target) or {}
+    found = reported(trials)
+    defects = []
+    for defect in saved.get("defects") or []:
+        # A Verdict judged again drops its old Findings; a Defect with none left goes too.
+        kept = [key for key in defect["findings"] if key in found]
+        if kept:
+            defects.append({**defect, "findings": kept})
+    placed = {key for defect in defects for key in defect["findings"]}
+    pending = {f"F{n}": key for n, key in enumerate((k for k in found if k not in placed), 1)}
+    record = _record(
+        j,
+        cost_usd=saved.get("cost_usd"),
+        seconds=saved.get("seconds"),
+        next_id=saved.get("next_id", 1),
+        defects=_with_severity(defects, found),
+    )
+    if not pending:
+        record["status"] = "ok"
+        write_json(target, record)
+        return True
+
+    def parse(reply: str) -> dict:
+        groups = check_groups(reply_json(reply, "defects"), {d["id"] for d in defects}, pending)
+        by_id = {d["id"]: d for d in defects}
+        number = record["next_id"]
+        for group in groups:
+            keys = [pending[f] for f in group["findings"]]
+            if group["id"] in by_id:
+                by_id[group["id"]]["findings"] += keys
+                continue
+            if group.get("left_out"):
+                # The reply skipped this Finding: it stands as a Defect in its own words.
+                group = {"title": found[keys[0]]["title"], "detail": found[keys[0]]["detail"]}
+            new = {"id": f"D{number}", "title": group["title"], "description": group["detail"]}
+            defects.append({**new, "findings": keys})
+            number += 1
+        return {"defects": _with_severity(defects, found), "next_id": number}
+
+    instructions = shipped_prompt("merge")
+    body = merge_request(defects, pending, found)
+
+    def ask() -> tuple[str, float | None]:
+        if j.type == "api":
+            return _ask_api(settings, j, instructions, body, agent)
+        with tempfile.TemporaryDirectory(prefix="build-bench-merge-") as tmp:
+            work = Path(tmp) / "merge"
+            work.mkdir()
+            prompt = f"{instructions}\n\n---\n\n{body}"
+            return _ask_agent(settings, j, prompt, work, target.with_suffix(""), agent)
+
+    _attempt(record, target, ask, parse)
+    if record["status"] == "ok":
+        say(f"[merged] {len(found)} finding(s) into {len(defects)} defect(s) by {j.name}")
+    else:
+        say(f"[merge failed] by {j.name}: {record['reason']}")
+    return record["status"] == "ok"
+
+
+def _with_severity(defects: list[dict], found: dict[str, dict]) -> list[dict]:
+    """Each Defect is as severe as its worst Finding."""
+    for defect in defects:
+        defect["severity"] = min(
+            (found[key]["severity"] for key in defect["findings"]), key=SEVERITIES.index
+        )
+    return defects
+
+
+def merge_request(defects: list[dict], pending: dict[str, str], found: dict[str, dict]) -> str:
+    parts = ["## Existing defects\n"]
+    if not defects:
+        parts.append("None yet.\n")
+    for defect in defects:
+        parts.append(f"### {defect['id']}: {defect['title']}\n\n{defect['description']}\n")
+    parts.append("## New findings\n")
+    for name, key in pending.items():
+        finding = found[key]
+        parts.append(
+            f"### {name}: {finding['title']}\n\n"
+            f"Where: {finding['where'] or 'not given'}\n\n{finding['detail']}\n"
+        )
+    return "\n".join(parts)
+
+
+def check_groups(value: dict, existing: set[str], pending: dict[str, str]) -> list[dict]:
+    """The merge reply as groups of new Findings, each placed exactly once.
+
+    A Finding named twice stays where it was named first. One the reply leaves
+    out becomes a Defect of its own, so no Finding is ever lost.
+    """
+    groups = value.get("defects")
+    if not isinstance(groups, list):
+        raise VerdictError("defects is not a list")
+    problems, clean = [], []
+    seen: set[str] = set()
+    for n, group in enumerate(groups, 1):
+        if not isinstance(group, dict) or not isinstance(group.get("findings"), list):
+            problems.append(f"defect {n} has no list of findings")
+            continue
+        names = [f for f in dict.fromkeys(map(str, group["findings"])) if f not in seen]
+        unknown = [f for f in names if f not in pending]
+        if unknown:
+            problems.append(f"defect {n} names unknown finding(s) {', '.join(unknown)}")
+            continue
+        seen.update(names)
+        new = group.get("id") not in existing
+        if new and not _str(group.get("title")):
+            problems.append(f"defect {n} is new but has no title")
+        if names:
+            clean.append(
+                {
+                    "id": group.get("id"),
+                    "title": _str(group.get("title")),
+                    "detail": _str(group.get("description")),
+                    "findings": names,
+                }
+            )
+    if problems:
+        raise VerdictError("; ".join(problems))
+    return clean + [
+        {"id": None, "title": name, "detail": "", "findings": [name], "left_out": True}
+        for name in pending
+        if name not in seen
+    ]
+
+
+# --- Check: which Trials have which Defects ---------------------------------------
+
+
+def check(settings: Settings, folder: Path, trials: list[Trial], say, agent: Agents) -> bool:
+    """Ask each Judge, for each Trial, about every Defect it has not answered for."""
+    defects = (read_json(folder / "defects.json") or {}).get("defects") or []
+    if not defects:
+        return True
+    instructions = shipped_prompt("check")
+    sha = _sha(instructions)
+
+    def unanswered(j: Judge, trial: Trial) -> tuple[dict, list[dict]]:
+        saved = read_json(trial.folder / "defect-checks" / f"{j.name}.json") or {}
+        answers = (saved.get("answers") or {}) if saved.get("prompt_sha") == sha else {}
+        return saved, [d for d in defects if d["id"] not in answers]
+
+    todo = [(j, t) for j in settings.judges for t in trials if unanswered(j, t)[1]]
+    lock = threading.Lock()
+
+    def one(task: tuple[Judge, Trial]) -> None:
+        j, trial = task
+        saved, missing = unanswered(j, trial)
+        label = f"trial-{secrets.token_hex(3)}"
+        target = trial.folder / "defect-checks" / f"{j.name}.json"
+        target.parent.mkdir(exist_ok=True)
+        kept = saved if saved.get("prompt_sha") == sha else {}
+        record = _record(
+            j,
+            label=label,
+            prompt_sha=sha,
+            cost_usd=kept.get("cost_usd"),
+            seconds=kept.get("seconds"),
+            answers=dict(kept.get("answers") or {}),
+        )
+        asked = "## Known defects\n\n" + "\n".join(
+            f"### {d['id']}: {d['title']}\n\n{d['description']}\n" for d in missing
+        )
+        _attempt(
+            record,
+            target,
+            lambda: ask_about_trial(
+                settings,
+                folder,
+                j,
+                trial,
+                label,
+                instructions,
+                asked,
+                target.with_suffix(""),
+                agent,
+            ),
+            lambda reply: {
+                "answers": {
+                    **record["answers"],
+                    **check_answers(reply_json(reply, "answers"), [d["id"] for d in missing]),
+                }
+            },
+        )
+        with lock:
+            if record["status"] == "ok":
+                say(f"[checked] {trial.id} by {j.name}")
+            else:
+                say(f"[check failed] {trial.id} by {j.name}: {record['reason']}")
+
+    in_parallel(one, todo, settings.concurrency, agent, say)
+    return all(
+        _ok(t.folder / "defect-checks" / f"{j.name}.json") and not unanswered(j, t)[1]
+        for j in settings.judges
+        for t in trials
+    )
+
+
+def check_answers(value: dict, asked: list[str]) -> dict[str, dict]:
+    answers = value.get("answers")
+    if not isinstance(answers, list):
+        raise VerdictError("answers is not a list")
+    problems, clean = [], {}
+    for answer in answers:
+        if not isinstance(answer, dict) or answer.get("id") not in asked:
+            continue
+        if answer.get("present") not in PRESENT:
+            problems.append(
+                f"{answer['id']} has present {answer.get('present')!r}, "
+                f"not one of {', '.join(PRESENT)}"
+            )
+        clean[answer["id"]] = {
+            "present": answer.get("present"),
+            "where": _str(answer.get("where")),
+            "evidence": _str(answer.get("evidence")),
+        }
+    missing = [name for name in asked if name not in clean]
+    if missing:
+        problems.append(f"no answer for {', '.join(missing)}")
+    if problems:
+        raise VerdictError("; ".join(problems))
+    return clean

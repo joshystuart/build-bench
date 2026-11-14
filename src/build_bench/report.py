@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from statistics import mean
 from typing import Any
 
-from .judge import SCORES
+from .judge import MERGED, SEVERITIES
 from .results import read_json, saved_trials, write_json
 from .settings import Settings
 
@@ -23,10 +24,10 @@ OUTPUT = [
     ("prod_removed", "Prod lines -", 0),
     ("test_added", "Test lines +", 0),
     ("test_removed", "Test lines -", 0),
-    ("checks_passed", "Checks passed (share)", 2),
-    ("criteria_ticked", "Criteria ticked", 0),
 ]
-SCORE_COLUMNS = [(s, s.replace("_", " ").capitalize(), 2) for s in SCORES] + [("mean", "Mean", 2)]
+AGENT_NAMES = {"claude": "Claude Code", "copilot": "Copilot CLI"}
+#: Defects a Trial has, by severity, then the nits its Judges listed.
+QUALITY = [(s, f"{s.capitalize()} defects", 2) for s in MERGED] + [("nit", "Nits", 2)]
 
 
 def _round(value: float | None, decimals: int) -> float | int | None:
@@ -35,7 +36,20 @@ def _round(value: float | None, decimals: int) -> float | int | None:
     return int(round(value)) if decimals == 0 else round(float(value), decimals)
 
 
-def trial_row(trial, judges: list[str]) -> dict[str, Any]:
+def standing(votes: list[str]) -> str:
+    """Whether a Trial has a Defect, from its Judges' answers: more yes than no,
+    more no than yes, or neither."""
+    yes, no = votes.count("yes"), votes.count("no")
+    if yes != no:
+        return "present" if yes > no else "absent"
+    return "disputed" if votes else "unchecked"
+
+
+def _judging(saved: dict) -> dict:
+    return {key: saved.get(key) for key in ("status", "reason", "cost_usd", "seconds")}
+
+
+def trial_row(trial, judges: list[str], defects: list[dict] | None) -> dict[str, Any]:
     status = trial.status or {}
     m = read_json(trial.folder / "measurements.json") or {}
     timings = read_json(trial.folder / "timings.json") or {}
@@ -47,10 +61,13 @@ def trial_row(trial, judges: list[str]) -> dict[str, Any]:
         "repeat": status.get("repeat", trial.repeat),
         "status": status.get("status"),
         "reason": status.get("reason"),
-        "claude_version": status.get("claude_version"),
+        "agent": status.get("agent", "claude"),
+        # Trials saved before Copilot was an agent hold only `claude_version`.
+        "agent_version": status.get("agent_version") or status.get("claude_version"),
         "max_active": timings.get("max_active"),
         "measured": bool(m),
         "cost_usd": m.get("cost_usd"),
+        "cost_basis": m.get("cost_basis"),
         "tokens_total": (m.get("tokens") or {}).get("total"),
         "total_minutes": m["total_seconds"] / 60 if "total_seconds" in m else None,
         "wait_minutes": m["wait_seconds"] / 60 if "wait_seconds" in m else None,
@@ -59,30 +76,47 @@ def trial_row(trial, judges: list[str]) -> dict[str, Any]:
         "prod_removed": line_counts.get("prod_removed"),
         "test_added": line_counts.get("test_added"),
         "test_removed": line_counts.get("test_removed"),
-        "checks_passed": (1.0 if checks.get("passed") else 0.0) if checks.get("ran") else None,
-        "criteria_ticked": m.get("criteria_ticked") if m else None,
+        "checks_passed": bool(checks.get("passed")) if checks.get("ran") else None,
         "final_message": _text(trial.folder / "summary.md"),
         "changed_nothing": _changed_nothing(trial.folder),
-        "scores": {},
+        "findings": {},
         "verdicts": {},
+        "defect_checks": {},
+        "defects": {},
     }
     for key, _, decimals in BUILD + OUTPUT:
         row[key] = _round(row[key], decimals)
+    votes: dict[str, list[str]] = {d["id"]: [] for d in defects or []}
     for name in judges:
         verdict = read_json(trial.folder / "verdicts" / f"{name}.json")
-        if verdict is None:
-            continue
-        row["verdicts"][name] = {
-            "status": verdict.get("status"),
-            "reason": verdict.get("reason"),
-            "cost_usd": verdict.get("cost_usd"),
-            "seconds": verdict.get("seconds"),
-            "bugs": len(verdict.get("bugs") or []),
-        }
-        if verdict.get("status") == "ok":
-            scores = dict(verdict["scores"])
-            scores["mean"] = round(mean(scores.values()), 2)
-            row["scores"][name] = scores
+        if verdict is not None:
+            row["verdicts"][name] = _judging(verdict)
+            # A Verdict from before Findings had severities holds none to count.
+            if verdict.get("status") == "ok" and "findings" in verdict:
+                found = [f.get("severity") for f in verdict["findings"]]
+                row["findings"][name] = {s: found.count(s) for s in SEVERITIES}
+        checked = read_json(trial.folder / "defect-checks" / f"{name}.json")
+        if checked is not None:
+            row["defect_checks"][name] = _judging(checked)
+            for defect, answer in (checked.get("answers") or {}).items():
+                if defect in votes:
+                    votes[defect].append(answer.get("present"))
+    row["defects"] = {defect: standing(answers) for defect, answers in votes.items()}
+    # How many Defects of each severity the Trial has. Unknown until the Defects
+    # are merged and, when there are any, until a Judge has checked this Trial.
+    known = defects is not None and (not defects or any(v != [] for v in votes.values()))
+    for severity in MERGED:
+        row[severity] = (
+            sum(
+                1
+                for d in defects or []
+                if d["severity"] == severity and row["defects"][d["id"]] == "present"
+            )
+            if known
+            else None
+        )
+    nits = [found["nit"] for found in row["findings"].values()]
+    row["nit"] = round(mean(nits), 2) if nits else None
     timeline = _timeline(m)
     if timeline:
         row["timeline"] = timeline
@@ -136,14 +170,22 @@ def aggregate(values: list[float | int | None], decimals: int) -> dict:
     }
 
 
+def _severity_order(defect: dict) -> tuple[int, int]:
+    number = defect["id"].lstrip("D")
+    return SEVERITIES.index(defect["severity"]), int(number) if number.isdigit() else 0
+
+
 def build_report(settings: Settings, folder: Path) -> dict:
     experiment = read_json(folder / "experiment.json") or {}
     judges = [j.name for j in settings.judges]
     for trial in saved_trials(folder):
-        for f in (trial.folder / "verdicts").glob("*.json"):
-            if f.stem not in judges:
-                judges.append(f.stem)
-    rows = [trial_row(t, judges) for t in saved_trials(folder)]
+        for kind in ("verdicts", "defect-checks"):
+            for f in (trial.folder / kind).glob("*.json"):
+                if f.stem not in judges:
+                    judges.append(f.stem)
+    merged = read_json(folder / "defects.json")
+    defects = sorted(merged.get("defects") or [], key=_severity_order) if merged else None
+    rows = [trial_row(t, judges, defects) for t in saved_trials(folder)]
 
     order = [v.name for v in settings.variants]
     order += sorted({r["variant"] for r in rows} - set(order))
@@ -153,26 +195,59 @@ def build_report(settings: Settings, folder: Path) -> dict:
         if not mine:
             continue
         done = [r for r in mine if r["status"] == "finished"]
-        entry: dict[str, Any] = {
-            "name": name,
-            "trials": len(mine),
-            "finished": len(done),
-            "build": {k: aggregate([r[k] for r in done], d) for k, _, d in BUILD},
-            "output": {k: aggregate([r[k] for r in done], d) for k, _, d in OUTPUT},
-            "scores": {},
-        }
-        for j in judges:
-            scored = [r["scores"][j] for r in done if j in r["scores"]]
-            entry["scores"][j] = {
-                k: aggregate([s[k] for s in scored], d) for k, _, d in SCORE_COLUMNS
+        variants.append(
+            {
+                "name": name,
+                "trials": len(mine),
+                "finished": len(done),
+                "build": {k: aggregate([r[k] for r in done], d) for k, _, d in BUILD},
+                "output": {k: aggregate([r[k] for r in done], d) for k, _, d in OUTPUT},
+                "quality": {
+                    # Of every Trial, so one that failed to finish counts as not passing.
+                    "checks": {
+                        "passed": sum(1 for r in mine if r["checks_passed"]),
+                        "ran": sum(1 for r in mine if r["checks_passed"] is not None),
+                        "trials": len(mine),
+                    },
+                    **{k: aggregate([r[k] for r in done], d) for k, _, d in QUALITY},
+                },
             }
-        variants.append(entry)
+        )
+
+    defect_rows = []
+    for defect in defects or []:
+        standings = {}
+        for v in variants:
+            found = [
+                r["defects"].get(defect["id"], "unchecked")
+                for r in rows
+                if r["variant"] == v["name"] and r["status"] == "finished"
+            ]
+            standings[v["name"]] = {
+                "present": found.count("present"),
+                "disputed": found.count("disputed"),
+                "checked": len(found) - found.count("unchecked"),
+            }
+        defect_rows.append(
+            {
+                "id": defect["id"],
+                "severity": defect["severity"],
+                "title": defect["title"],
+                "description": defect["description"],
+                "findings": len(defect["findings"]),
+                "found_by": sorted({key.split("/")[1] for key in defect["findings"]}),
+                "variants": standings,
+            }
+        )
 
     judge_rows = []
     for j in judges:
         verdicts = [r["verdicts"][j] for r in rows if j in r["verdicts"]]
-        costs = [v["cost_usd"] for v in verdicts if v["cost_usd"] is not None]
-        seconds = [v["seconds"] for v in verdicts if v["seconds"] is not None]
+        checks = [r["defect_checks"][j] for r in rows if j in r["defect_checks"]]
+        merges = [_judging(merged)] if merged and merged.get("judge") == j else []
+        every = verdicts + checks + merges
+        costs = [v["cost_usd"] for v in every if v["cost_usd"] is not None]
+        seconds = [v["seconds"] for v in every if v["seconds"] is not None]
         config = next((x for x in settings.judges if x.name == j), None)
         judge_rows.append(
             {
@@ -180,28 +255,60 @@ def build_report(settings: Settings, folder: Path) -> dict:
                 "type": config.type if config else None,
                 "model": config.model if config else None,
                 "verdicts": sum(1 for v in verdicts if v["status"] == "ok"),
-                "failed": sum(1 for v in verdicts if v["status"] != "ok"),
+                "checks": sum(1 for v in checks if v["status"] == "ok"),
+                "failed": sum(1 for v in every if v["status"] != "ok"),
                 "cost_usd": _round(sum(costs), 4) if costs else None,
                 "minutes": _round(sum(seconds) / 60, 2) if seconds else None,
             }
         )
 
-    versions = sorted({r["claude_version"] for r in rows if r["claude_version"]})
+    failed_judging = [
+        {"trial": r["trial"], "judge": j, "step": step, "reason": v["reason"]}
+        for step, key in (("verdict", "verdicts"), ("defect check", "defect_checks"))
+        for r in rows
+        for j, v in r[key].items()
+        if v["status"] != "ok"
+    ]
+    if merged and merged.get("status") != "ok":
+        failed_judging.append(
+            {
+                "trial": None,
+                "judge": merged.get("judge"),
+                "step": "merge",
+                "reason": merged["reason"],
+            }
+        )
+
+    models = [v.model for v in settings.variants] + [j.model for j in settings.judges]
+    versions = {
+        kind: sorted(
+            {r["agent_version"] for r in rows if r["agent"] == kind and r["agent_version"]}
+        )
+        for kind in AGENT_NAMES
+    }
     return {
         "experiment": experiment.get("name", settings.name),
         "results_folder": str(folder),
         "auth": experiment.get("auth", settings.auth),
-        "claude_versions": versions,
+        "claude_versions": versions["claude"],
+        "copilot_versions": versions["copilot"],
         "flags": {
             "ran_alongside_others": [
                 {"trial": r["trial"], "max_active": r["max_active"]}
                 for r in rows
                 if (r["max_active"] or 1) > 1
             ],
-            "mixed_claude_versions": len(versions) > 1,
+            "mixed_claude_versions": len(versions["claude"]) > 1,
+            "mixed_copilot_versions": len(versions["copilot"]) > 1,
             "subscription_login": experiment.get("auth", settings.auth) == "subscription",
+            # Claude Code Trials are priced from list prices, Copilot Trials from its credits.
+            "mixed_cost_bases": len({r["cost_basis"] for r in rows if r["cost_basis"]}) > 1,
+            # A Judge tends to go easy on work from its own model family.
+            "judges_share_the_builders_family": bool(settings.judges)
+            and all("claude" in model.lower() for model in models),
         },
         "variants": variants,
+        "defects": defect_rows if defects is not None else None,
         "judges": judge_rows,
         "failed_trials": [
             {"trial": r["trial"], "reason": r["reason"], "final_message": r["final_message"]}
@@ -213,12 +320,7 @@ def build_report(settings: Settings, folder: Path) -> dict:
             for r in rows
             if r["status"] == "finished" and r["changed_nothing"]
         ],
-        "failed_verdicts": [
-            {"trial": r["trial"], "judge": j, "reason": v["reason"]}
-            for r in rows
-            for j, v in r["verdicts"].items()
-            if v["status"] != "ok"
-        ],
+        "failed_judging": failed_judging,
         "trials": rows,
     }
 
@@ -242,14 +344,105 @@ def cell(agg: dict) -> str:
     return f"{num(agg['mean'])} ({num(agg['min'])}–{num(agg['max'])})"
 
 
-def _table(variants: list[dict], group: str, columns, judge: str | None = None) -> list[str]:
-    head = ["Variant", "Finished"] + [label for _, label, _ in columns]
-    out = ["| " + " | ".join(head) + " |", "|" + "---|" * len(head)]
-    for v in variants:
-        values = v[group][judge] if judge else v[group]
-        cells = [v["name"], f"{v['finished']}/{v['trials']}"]
-        cells += [cell(values[key]) for key, _, _ in columns]
-        out.append("| " + " | ".join(cells) + " |")
+@dataclass
+class Table:
+    """One of the report's tables. The first value of each row is its row header."""
+
+    title: str
+    head: list[str]
+    rows: list[list[str]]
+    note: str = ""
+
+
+def _summary(variants: list[dict], group: str, columns) -> list[list[str]]:
+    return [
+        [v["name"], f"{v['finished']}/{v['trials']}"] + [cell(v[group][k]) for k, _, _ in columns]
+        for v in variants
+    ]
+
+
+def _checks_cell(checks: dict) -> str:
+    return f"{checks['passed']}/{checks['trials']}" if checks["ran"] else "–"
+
+
+def _defect_cell(found: dict) -> str:
+    if not found["checked"]:
+        return "–"
+    disputed = f" ({found['disputed']} disputed)" if found["disputed"] else ""
+    return f"{found['present']}/{found['checked']}{disputed}"
+
+
+def tables(data: dict) -> list[Table]:
+    """Every table of the report, in order, for the Markdown and the HTML alike."""
+    variants = data["variants"]
+    labels = ["Variant", "Finished"]
+    found = [
+        Table(
+            "Build",
+            labels + [label for _, label, _ in BUILD],
+            _summary(variants, "build", BUILD),
+            "Each cell is the average over finished Trials, with the lowest and highest in "
+            "brackets. Failed Trials are left out of the averages.",
+        ),
+        Table(
+            "Output",
+            labels + [label for _, label, _ in OUTPUT],
+            _summary(variants, "output", OUTPUT),
+        ),
+        Table(
+            "Quality",
+            labels + ["Checks passed"] + [label for _, label, _ in QUALITY],
+            [
+                [v["name"], f"{v['finished']}/{v['trials']}", _checks_cell(v["quality"]["checks"])]
+                + [cell(v["quality"][k]) for k, _, _ in QUALITY]
+                for v in variants
+            ],
+            "Checks passed counts every Trial, so one that failed to finish counts against "
+            "its Variant. The Defect columns are the Defects one Trial has, on average. Nits "
+            "are what one Judge listed for one Trial, on average.",
+        ),
+    ]
+    if data["defects"]:
+        found.append(
+            Table(
+                "Defects",
+                ["Defect", "Severity", "What is wrong", "Found by"] + [v["name"] for v in variants],
+                [
+                    [d["id"], d["severity"], d["title"].replace("|", "/"), ", ".join(d["found_by"])]
+                    + [_defect_cell(d["variants"][v["name"]]) for v in variants]
+                    for d in data["defects"]
+                ],
+                "Each Variant's column is the Trials that have the Defect, of the Trials "
+                "checked for it. A Trial has a Defect when more of its Judges say it does than "
+                "say it does not; an even split is disputed.",
+            )
+        )
+    if data["judges"]:
+        found.append(
+            Table(
+                "Judges",
+                ["Judge", "Type", "Model", "Verdicts", "Defect checks", "Failed", "Cost ($)"]
+                + ["Time (min)"],
+                [
+                    [j["name"], j["type"] or "–", j["model"] or "–", str(j["verdicts"])]
+                    + [str(j["checks"]), str(j["failed"]), num(j["cost_usd"]), num(j["minutes"])]
+                    for j in data["judges"]
+                ],
+                "Judging cost and time, kept apart from the build numbers.",
+            )
+        )
+    return found
+
+
+def failed_judging_lines(data: dict) -> list[str]:
+    out = []
+    for f in data["failed_judging"]:
+        if f["step"] == "merge":
+            out.append(f"Merging the Defects, by {f['judge']}: {f['reason']}")
+        elif f["step"] == "verdict":
+            out.append(f"{f['trial']} by {f['judge']}: {f['reason']}")
+        else:
+            out.append(f"{f['trial']} by {f['judge']} ({f['step']}): {f['reason']}")
     return out
 
 
@@ -260,7 +453,7 @@ def flag_lines(data: dict) -> list[str]:
             "- Login: **subscription**. Subscription rate limits can slow Trials down, "
             "so trust time less than cost and quality."
         )
-    else:
+    elif data["auth"]:
         out.append("- Login: **API key**.")
     alongside = data["flags"]["ran_alongside_others"]
     if alongside:
@@ -269,46 +462,39 @@ def flag_lines(data: dict) -> list[str]:
             f"- **Ran alongside other Trials:** {names}. Time comparisons between Trials "
             "that ran at once are weaker than cost and quality comparisons."
         )
-    if data["flags"]["mixed_claude_versions"]:
+    for kind, name in AGENT_NAMES.items():
+        versions = data[f"{kind}_versions"]
+        if len(versions) > 1:
+            out.append(
+                f"- **Mixed {name} versions:** "
+                + ", ".join(versions)
+                + ". Trials built by different versions may not be comparable."
+            )
+        elif versions:
+            out.append(f"- {name} version: {versions[0]}.")
+    if data["flags"]["mixed_cost_bases"]:
         out.append(
-            "- **Mixed Claude Code versions:** "
-            + ", ".join(data["claude_versions"])
-            + ". Trials built by different versions may not be comparable."
+            "- **Costs are on two bases.** Claude Code Trials are priced from list prices, "
+            "Copilot Trials from the AI credits Copilot charged, so compare cost between "
+            "the two with care."
         )
-    elif data["claude_versions"]:
-        out.append(f"- Claude Code version: {data['claude_versions'][0]}.")
+    if data["flags"]["judges_share_the_builders_family"]:
+        out.append(
+            "- **Every Judge is a Claude model, like the builders.** A Judge tends to go "
+            "easy on work from its own model family, so add a Judge from another provider."
+        )
     return out
 
 
 def markdown(data: dict) -> str:
     out = [f"# {data['experiment']}", ""]
     out += flag_lines(data) + [""]
-    out += [
-        "Each cell is the average over finished Trials, with the lowest and highest "
-        "in brackets. Failed Trials are left out.",
-        "",
-        "## Build",
-        "",
-    ]
-    out += _table(data["variants"], "build", BUILD) + ["", "## Output", ""]
-    out += _table(data["variants"], "output", OUTPUT) + [""]
-    for j in data["judges"]:
-        out += [f"## Scores: {j['name']}", ""]
-        out += _table(data["variants"], "scores", SCORE_COLUMNS, judge=j["name"]) + [""]
-    if data["judges"]:
-        out += [
-            "## Judges",
-            "",
-            "Judging cost and time, kept apart from the build numbers.",
-            "",
-            "| Judge | Type | Model | Verdicts | Failed | Cost ($) | Time (min) |",
-            "|---|---|---|---|---|---|---|",
-        ]
-        for j in data["judges"]:
-            out.append(
-                f"| {j['name']} | {j['type'] or '–'} | {j['model'] or '–'} | {j['verdicts']} "
-                f"| {j['failed']} | {num(j['cost_usd'])} | {num(j['minutes'])} |"
-            )
+    for table in tables(data):
+        out += [f"## {table.title}", ""]
+        if table.note:
+            out += [table.note, ""]
+        out += ["| " + " | ".join(table.head) + " |", "|" + "---|" * len(table.head)]
+        out += ["| " + " | ".join(row) + " |" for row in table.rows]
         out.append("")
     if data["failed_trials"]:
         out += ["## Failed Trials", ""]
@@ -332,9 +518,9 @@ def markdown(data: dict) -> str:
                 else f"- {f['trial']}: the agent wrote no final message."
             )
         out.append("")
-    if data["failed_verdicts"]:
-        out += ["## Failed Verdicts", ""]
-        out += [f"- {f['trial']} by {f['judge']}: {f['reason']}" for f in data["failed_verdicts"]]
+    if data["failed_judging"]:
+        out += ["## Failed judging", ""]
+        out += [f"- {line}" for line in failed_judging_lines(data)]
         out += [""]
     return "\n".join(out)
 

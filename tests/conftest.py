@@ -56,14 +56,16 @@ def target_repo(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def fake(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """Put the fake `claude` first on the PATH and give the test its control file."""
+    """Put the fake `claude` and `copilot` first on the PATH and give the test their
+    control file."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    script = bin_dir / "claude"
-    script.write_text(
-        f"#!{sys.executable}\nimport runpy\nrunpy.run_path({str(HERE / 'fake_claude.py')!r}, run_name='__main__')\n"
-    )
-    script.chmod(0o755)
+    for name in ("claude", "copilot"):
+        script = bin_dir / name
+        script.write_text(
+            f"#!{sys.executable}\nimport runpy\nrunpy.run_path({str(HERE / f'fake_{name}.py')!r}, run_name='__main__')\n"
+        )
+        script.chmod(0o755)
     control = tmp_path / "fake-control.json"
     log = tmp_path / "fake-log"
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
@@ -83,14 +85,20 @@ class Fake:
     def set(self, **values) -> None:
         self.control.write_text(json.dumps(values))
 
-    def calls(self, judge: bool | None = False) -> list[dict]:
+    def calls(
+        self, judge: bool | None = False, kind: str | None = None, agent: str = "claude"
+    ) -> list[dict]:
+        """Recorded calls to one agent: builds by default, judge calls with `judge=True`
+        (of one `kind`: find, merge or check), or every call with `judge=None`."""
         found = (
             [json.loads(p.read_text()) for p in self.log.glob("*.json")]
             if self.log.exists()
             else []
         )
         found.sort(key=lambda c: c["start"])
-        return [c for c in found if judge is None or c["judge"] == judge]
+        found = [c for c in found if c.get("agent", "claude") == agent]
+        found = [c for c in found if judge is None or c["judge"] == judge]
+        return [c for c in found if kind is None or c["kind"] == kind]
 
 
 @pytest.fixture

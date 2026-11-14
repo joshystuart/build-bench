@@ -6,7 +6,9 @@
         status.json  prompt.md  stream.jsonl  stderr.log  summary.md
         transcript/main.jsonl  transcript/subagents/
         diff.patch  diff-full.patch  plan.diff  timings.json  pre_build.log
-        measurements.json  checks.log  verdicts/<judge>.json
+        measurements.json  checks.log
+        verdicts/<judge>.json  defect-checks/<judge>.json
+    defects.json
     report.json  report.md  report.html
 
 The Trial workspaces live apart, under the cache folder, so that nothing above

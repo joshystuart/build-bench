@@ -235,3 +235,102 @@ build-bench removes every variable starting with `CLAUDE`, plus
 `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN`, then sets
 `CLAUDE_CONFIG_DIR` and the one login variable. The real home folder is kept,
 so tool caches under it still work.
+
+## The GitHub Copilot CLI
+
+A Variant with `agent: copilot`, or a Judge with `type: copilot`, is started
+this way instead. Every claim in this section comes from real runs of Copilot
+CLI 1.0.112 on Linux on 2026-11-14, unless it says otherwise. One of them,
+trimmed, is the test fixture in `tests/fixtures/transcripts/copilot/`.
+
+### The command
+
+```sh
+COPILOT_HOME=<workspaces>/<trial>/config \
+copilot -p "<the prompt>" \
+  --allow-all --no-ask-user --no-auto-update \
+  --output-format json \
+  --model claude-sonnet-5.5 \
+  --effort high
+```
+
+- `-p` runs one headless turn and exits. The prompt is an argument, not
+  standard input, so it is limited by the system's argument size (about
+  128 KB for one argument on Linux).
+- `--allow-all` allows every tool, path and URL without asking, and
+  `--no-ask-user` stops the agent asking questions nobody will answer.
+- `--no-auto-update` keeps the installed version, so a pin holds.
+- `--output-format json` writes one JSON event per line, each with `type`,
+  `data`, `id`, `timestamp` and `parentId`. The last is
+  `{"type":"result","exitCode":0,"usage":{...}}`. It holds no summary, no
+  tokens and no cost. build-bench saves the stream as `stream.jsonl`, and takes
+  the summary from the main agent's last `assistant.message`.
+- `copilot --version` prints `GitHub Copilot CLI 1.0.112.` and a line about
+  updates; build-bench reads the number. `copilot_version` pins it.
+
+### Home folder and login
+
+`COPILOT_HOME` replaces `~/.copilot`: settings, skills (`skills/`), custom
+agents, session logs. Each Trial gets a fresh one, as with Claude Code.
+
+The login does not live there. With a fresh `COPILOT_HOME` and no token
+variable, the CLI was still signed in, from the keychain or the `gh` command's
+login. So build-bench hands it no login. A token in `COPILOT_GITHUB_TOKEN`,
+`GH_TOKEN` or `GITHUB_TOKEN` is passed through and redacted from saved files.
+
+Not checked here, from GitHub's documentation: the CLI also reads skills from
+`~/.agents/skills/`, and instructions from `CLAUDE.md`, `AGENTS.md` and
+`.claude/` inside the repository. The first is outside `COPILOT_HOME`, so
+those skills reach every Copilot Trial.
+
+### An account without access
+
+An account whose plan or policy does not allow the Copilot CLI fails within a
+second:
+
+```
+exit=1
+stderr: Error: Access denied by policy settings (Request ID: ...)
+stdout: {"type":"result","exitCode":1,"usage":{"premiumRequests":0,...}}
+```
+
+No session log is written. build-bench records the Trial as failed with
+`error: exit code 1:` and the first lines of the error.
+
+### Where the transcript lands
+
+```
+$COPILOT_HOME/session-state/<session id>/events.jsonl
+```
+
+One file holds the main agent and its subagents. A subagent's events carry an
+`agentId`; the main agent's carry none. The home folder is fresh, so the newest
+session is the Trial's. build-bench copies it to `transcript/main.jsonl`.
+
+- **Model calls:** one `session.usage_record` each, with `model`,
+  `inputTokens`, `outputTokens`, `cacheReadTokens` and `cacheWriteTokens`.
+  `inputTokens` includes the cached tokens, so build-bench subtracts them.
+- **Cost:** each usage record's `copilotUsage.totalNanoAiu`, in billionths of
+  an AI credit. The records of the recorded run add up to 13,002,580,000, the
+  same total `session.shutdown` reports. GitHub prices an AI credit at one
+  cent (its documentation, not checked here), which makes that run $0.13. The
+  input and output rates in the record ($2 and $10 a million tokens) match
+  Anthropic's list prices for the model.
+- **Tools:** `tool.execution_start` and `tool.execution_complete`, paired by
+  `toolCallId`.
+- **Subagents:** `subagent.started` and `subagent.completed`, with the name
+  the main agent gave (`agentDisplayName`) and `executionMode` (`sync` when
+  the main agent waits). The `task` tool call that starts one is waiting, not
+  tool work.
+
+### Limits
+
+The CLI has no spending limit for a whole run (`--max-ai-credits` is a soft
+limit per response, from the documentation), so `max_budget_usd` does nothing
+for a Copilot Trial. The time limit works as for Claude Code.
+
+### Environment
+
+build-bench removes every variable starting with `COPILOT_` except
+`COPILOT_GITHUB_TOKEN`, so a default model or home folder set in the shell
+does not follow the agent in, then sets `COPILOT_HOME`.
