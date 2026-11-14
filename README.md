@@ -365,6 +365,35 @@ model like the builders. Two ways to reach other models with one account:
   time print a code to enter at github.com. LiteLLM keeps the login in
   `~/.config/litellm/github_copilot/`.
 
+### Choosing Judges
+
+These tips come from one real Experiment (six Trials of a 600-line change, three
+Judges), so treat them as a starting point and check them against your own
+Judges table.
+
+- **Use three Judges, from providers other than the builders'.** An odd number
+  cannot split evenly, so no Defect ends up disputed by a tie.
+- **Make at least one an Agent Judge on a strong coding model.** It can run the
+  code and write a test, and it finds the most: in that Experiment an Agent
+  Judge on `gpt-6.1-terra` raised 30 of the 43 Findings and reproduced 10 of
+  them.
+- **Add an API Judge as a cheap extra vote.** It sees only the diff, but it is
+  several times faster, and on `openrouter/openai/gpt-6.1-sol` it still raised
+  12 Findings.
+- **A Judge that finds little can still check well.** An Agent Judge on
+  `gemini-4-hydrogen` raised one Finding in six Trials, yet in the check step
+  it agreed with the other two on all but one answer. Keep such a Judge for its
+  vote, or swap it for a better finder; do not rely on it to find.
+- **Give `merge_judge` to your strongest model.** The merge is one small call,
+  and a poor merge splits one problem into several Defects or joins two.
+- **Look at who found each Defect.** When one Judge raises most of the
+  Findings, the list of Defects is mostly that model's view of what matters.
+
+Before comparing Variants, run the same Variant under two names. The difference
+between them is the noise, and a real difference has to be larger. A Defect
+that every Trial has says nothing about which Variant is better: it usually
+points at a gap in the plan.
+
 A reply that is missing a severity, or names one that does not exist, is
 recorded as a failed Verdict with the reason, and `judge` runs it again next
 time. A Verdict is also given again when its Judge's prompt has changed, so one
@@ -385,7 +414,11 @@ Experiment never mixes Verdicts from two prompts. The shipped prompts are in
   Variant that have it. A Trial has a Defect when more of its Judges say it
   does than say it does not; an even split is shown as disputed.
 - **Judges:** each Judge's Verdicts, Defect checks, failures, cost and time,
-  kept apart from the build numbers.
+  kept apart from the build numbers. Only the Judges in the settings file are
+  listed and counted: what a Judge since removed left in the results folder is
+  ignored. An API Judge's cost comes from LiteLLM's price list, or from what
+  the provider reported with the reply (OpenRouter does) when the model is not
+  on it.
 
 Failed Trials, failed Verdicts and failed Defect checks are listed with their
 reasons. The report flags Trials that ran alongside others (time comparisons

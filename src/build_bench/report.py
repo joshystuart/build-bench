@@ -177,12 +177,9 @@ def _severity_order(defect: dict) -> tuple[int, int]:
 
 def build_report(settings: Settings, folder: Path) -> dict:
     experiment = read_json(folder / "experiment.json") or {}
+    # Only the Judges in the settings file: a results folder can still hold the
+    # Verdicts of Judges since removed, which would count as votes and as cost.
     judges = [j.name for j in settings.judges]
-    for trial in saved_trials(folder):
-        for kind in ("verdicts", "defect-checks"):
-            for f in (trial.folder / kind).glob("*.json"):
-                if f.stem not in judges:
-                    judges.append(f.stem)
     merged = read_json(folder / "defects.json")
     defects = sorted(merged.get("defects") or [], key=_severity_order) if merged else None
     rows = [trial_row(t, judges, defects) for t in saved_trials(folder)]
