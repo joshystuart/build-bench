@@ -9,6 +9,7 @@
         measurements.json  checks.log
         verdicts/<judge>.json  defect-checks/<judge>.json
     defects.json
+    comparisons/<judge>/<trial>__<trial>.json
     report.json  report.md  report.html
 
 The Trial workspaces live apart, under the cache folder, so that nothing above

@@ -63,6 +63,11 @@ class Variant(_Strict):
     repeats: int = Field(default=1, ge=1)
 
 
+class Compare(_Strict):
+    #: The most pairs of Trials this Judge compares, spread over the Variants.
+    max_pairs: int = Field(ge=1)
+
+
 class Judge(_Strict):
     name: str = Field(pattern=NAME_PATTERN)
     #: An Agent Judge (`claude` or `copilot`), or one model call (`api`).
@@ -72,6 +77,8 @@ class Judge(_Strict):
     effort: Literal["low", "medium", "high", "xhigh", "max"] | None = None
     api_key_env: str | None = None
     limits: Limits | None = None
+    #: Set to have this Judge also say which of two Trials is better. Off when left out.
+    compare: Compare | None = None
 
 
 class Settings(_Strict):

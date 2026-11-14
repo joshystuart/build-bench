@@ -24,9 +24,12 @@ It must pass before a change is done. CI runs the same command.
 - `progress.py` — the live display `run` draws in a terminal, read from the
   files the Trials write.
 - `transcript.py`, `lines.py` — measurements from transcripts and diffs.
-- `judge.py` — `judge`: measurements and checks, then the three judging steps
-  for API and Agent Judges: find (Verdicts), merge (Defects) and check.
-- `report.py`, `html_report.py` — `report`; the HTML page's markup, styles and script
+- `judge.py` — `judge`: measurements and checks, then the judging steps for
+  API and Agent Judges: find (Verdicts), merge (Defects) and check.
+- `compare.py` — the fourth judging step, for a Judge with `compare` set: which
+  of two Trials is better (Comparisons).
+- `report.py`, `html_report.py` — `report`, including how a difference between
+  Variants is weighed against the spread between Trials; the HTML page's markup, styles and script
   are in `templates/` (Jinja, autoescaped).
 - `presets/*.yaml`, `prices.yaml`, `prompts/*.md` — data, not code.
 
