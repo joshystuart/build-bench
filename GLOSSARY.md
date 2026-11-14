@@ -40,5 +40,11 @@ that describes it. Nits are never merged into defects.
 _Avoid_: Bug, issue, finding
 
 **Defect check**:
-One judge's answers, for one trial, to whether it has each defect.
+One judge's answers, for one trial, to whether it has each defect and, when it
+does, how severe the defect is there.
 _Avoid_: Confirmation, verification, vote
+
+**Comparison**:
+One judge's choice between two trials of different variants: which it would
+rather ship, or that they are the same.
+_Avoid_: Match, duel, ranking

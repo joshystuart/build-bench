@@ -285,6 +285,149 @@ def test_each_defect_is_counted_per_variant_worst_first(saved, cli, no_models):
     assert "| D1 | major | mul is missing | j | 2/2 | 0/1 |" in md
 
 
+def many(folder, name: str, costs: list[float], answers: list[dict]) -> None:
+    for n, (cost, answer) in enumerate(zip(costs, answers, strict=True), 1):
+        trial(folder, f"{name}-{n}", cost=cost, defect_checks={"j": checked(**answer)})
+
+
+def test_a_difference_is_weighed_against_the_spread_between_trials(saved, cli, no_models):
+    settings, folder = saved
+    shutil.rmtree(folder / "trials")
+    yes, no = {"D1": "yes", "D2": "yes"}, {"D1": "no", "D2": "yes"}
+    # v1's four Trials all cost less and all have both Defects; v2's have one.
+    many(folder, "v1", [1.0, 1.1, 1.2, 1.3], [yes] * 4)
+    many(folder, "v2", [2.0, 2.1, 2.2, 2.3], [no] * 4)
+    cli("report", settings)
+    data = json.loads((folder / "report.json").read_text())
+    (difference,) = data["differences"]
+    assert difference["variants"] == ["v1", "v2"]
+    # 2 of the 70 ways to deal eight Trials into two fours are this far apart.
+    assert difference["measures"]["cost_usd"] == {
+        "lower": "v1",
+        "by": 1.0,
+        "chance": 0.0286,
+        "weight": "clear",
+    }
+    assert difference["measures"]["defects"]["lower"] == "v2"
+    assert difference["measures"]["defects"]["by"] == 1.0
+    # Every Trial took the same time.
+    assert difference["measures"]["total_minutes"]["lower"] is None
+    md = (folder / "report.md").read_text()
+    assert "| v1 and v2 | v2 lower by 1: clear | v1 lower by 1: clear | the same |" in md
+
+    # With three Trials each, the same gap cannot be clear: 2 of 20 ways.
+    for name in ("v1-4", "v2-4"):
+        shutil.rmtree(folder / "trials" / name)
+    cli("report", settings)
+    data = json.loads((folder / "report.json").read_text())
+    cost = data["differences"][0]["measures"]["cost_usd"]
+    assert (cost["chance"], cost["weight"]) == (0.1, "possible")
+
+
+def test_a_difference_inside_the_spread_is_within_noise(saved, cli, no_models):
+    settings, folder = saved
+    shutil.rmtree(folder / "trials")
+    answer = {"D1": "yes", "D2": "yes"}
+    many(folder, "v1", [1.0, 3.0, 2.0], [answer] * 3)
+    many(folder, "v2", [2.5, 1.5, 2.3], [answer] * 3)
+    cli("report", settings)
+    data = json.loads((folder / "report.json").read_text())
+    cost = data["differences"][0]["measures"]["cost_usd"]
+    assert (cost["lower"], cost["weight"]) == ("v1", "within noise")
+
+
+def test_defects_in_every_trial_get_their_own_table(saved, cli, no_models):
+    settings, folder = saved
+    shutil.rmtree(folder / "trials")
+    many(folder, "v1", [1.0, 1.0], [{"D1": "yes", "D2": "yes"}, {"D1": "no", "D2": "yes"}])
+    many(folder, "v2", [1.0, 1.0], [{"D1": "no", "D2": "yes"}] * 2)
+    cli("report", settings)
+    data = json.loads((folder / "report.json").read_text())
+    assert {d["id"]: d["in_every_trial"] for d in data["defects"]} == {"D2": True, "D1": False}
+    md = (folder / "report.md").read_text()
+    differing, shared = md.split("## Defects in every Trial")
+    assert "| D1 | major | mul is missing | j | 1/2 | 0/2 |" in differing
+    assert "| D2 |" not in differing
+    assert "| D2 | critical | add loses data | j | 2/2 | 2/2 |" in shared
+
+
+def test_a_defect_is_as_severe_as_the_judges_voted(experiment, cli, no_models):
+    settings = experiment(
+        variants=[{"name": "v1", "prompt": "prompts/build.md", "model": "m1", "repeats": 2}],
+        judges=[{"name": n, "type": "api", "model": "openai/gpt-5"} for n in ("a", "b", "c")],
+    )
+    folder = settings.parent / ".bench" / "results" / "demo" / "20260101-000000"
+    write(folder / "experiment.json", {"name": "demo"})
+    defect = {"id": "D1", "title": "t", "description": "d", "findings": ["v1-1/a/x"]}
+    write(
+        folder / "defects.json",
+        {"judge": "a", "status": "ok", "defects": [{**defect, "severity": "critical"}]},
+    )
+
+    def said(present: str, severity: str | None = None) -> dict:
+        answer = {"present": present, "severity": severity, "where": "", "evidence": ""}
+        return {"status": "ok", "answers": {"D1": answer}, "cost_usd": 0.0, "seconds": 1.0}
+
+    # The Judge that found it called it critical; of the three that have it, two say minor.
+    trial(
+        folder,
+        "v1-1",
+        defect_checks={"a": said("yes", "critical"), "b": said("yes", "minor"), "c": said("no")},
+    )
+    trial(
+        folder, "v1-2", defect_checks={"a": said("no"), "b": said("yes", "minor"), "c": said("no")}
+    )
+    cli("report", settings)
+    data = json.loads((folder / "report.json").read_text())
+    (found,) = data["defects"]
+    assert (found["severity"], found["found_severity"], found["severity_votes"]) == (
+        "minor",
+        "critical",
+        3,
+    )
+    quality = data["variants"][0]["quality"]
+    assert (quality["critical"]["mean"], quality["minor"]["mean"]) == (0.0, 0.5)
+
+
+def compared(folder, judge: str, first: str, second: str, better: str | None, **more) -> None:
+    one, two = sorted([first, second])
+    record = {"status": "ok", "reason": None, "cost_usd": 0.5, "seconds": 60.0, **more}
+    write(
+        folder / "comparisons" / judge / f"{one}__{two}.json",
+        {"judge": judge, "first": first, "second": second, "better": better, **record},
+    )
+
+
+def test_comparisons_are_counted_for_each_pair_of_variants(saved, cli, no_models):
+    settings, folder = saved
+    for n, better in enumerate(["v1-1"] * 5 + [None], 1):
+        compared(folder, "j", "v1-1", f"v2-{n}", better)
+        trial(folder, f"v2-{n}")
+    compared(folder, "j", "v2-9", "v1-1", None, status="failed", reason="no reply")
+    trial(folder, "v2-9")
+    # A Judge no longer in the settings is left out.
+    compared(folder, "gone", "v1-1", "v2-1", "v2-1")
+    cli("report", settings)
+    data = json.loads((folder / "report.json").read_text())
+    assert data["comparisons"] == [
+        {
+            "variants": ["v1", "v2"],
+            "compared": 6,
+            "better": {"v1": 5, "v2": 0},
+            "same": 1,
+            "ahead": "v1",
+            # Five heads or five tails of five: 2 in 32.
+            "chance": 0.0625,
+            "weight": "possible",
+        }
+    ]
+    judge = data["judges"][0]
+    assert (judge["comparisons"], judge["failed"]) == (6, 3)
+    md = (folder / "report.md").read_text()
+    assert "| v1 and v2 | 6 | 5 | 0 | 1 | v1 ahead: possible |" in md
+    assert "- v2-9 with v1-1 by j (comparison): no reply" in md
+
+
 def test_quality_before_any_judging(experiment, cli, no_models):
     settings = experiment(checks=None)
     folder = settings.parent / ".bench" / "results" / "demo" / "20260101-000000"
@@ -370,6 +513,7 @@ def test_judge_cost_and_time_are_apart_from_the_build(saved, cli, no_models):
             "model": "openai/gpt-5",
             "verdicts": 3,
             "checks": 3,
+            "comparisons": 0,
             "failed": 2,
             # Four Verdicts, four Defect checks and the merge.
             "cost_usd": 0.79,
@@ -377,7 +521,7 @@ def test_judge_cost_and_time_are_apart_from_the_build(saved, cli, no_models):
         }
     ]
     md = (folder / "report.md").read_text()
-    assert "| j | api | openai/gpt-5 | 3 | 3 | 2 | 0.79 | 4.1 |" in md
+    assert "| j | api | openai/gpt-5 | 3 | 3 | 0 | 2 | 0.79 | 4.1 |" in md
     # Build cost is the Trials' alone.
     assert data["variants"][0]["build"]["cost_usd"]["mean"] == 2.0
 
@@ -531,7 +675,7 @@ def test_html_shows_the_same_numbers_as_the_markdown(saved, cli, no_models):
     md = md_tables((folder / "report.md").read_text())
     parser = Tables()
     parser.feed((folder / "report.html").read_text())
-    assert len(md) == 5  # build, output, quality, defects, judges
+    assert len(md) == 6  # build, output, quality, differences, defects, judges
     assert parser.tables[: len(md)] == md
 
 

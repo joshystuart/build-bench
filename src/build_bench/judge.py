@@ -3,7 +3,10 @@
 1. Find: each Judge reviews each Trial and lists its Findings (a Verdict).
 2. Merge: one Judge groups every Finding worse than a nit into the Experiment's
    distinct Defects, saved in `defects.json`.
-3. Check: each Judge says, for each Trial, which of those Defects it has.
+3. Check: each Judge says, for each Trial, which of those Defects it has and
+   how severe each is there.
+4. Compare: a Judge with `compare` set says which of two Trials is better
+   (see `compare.py`).
 
 Every step skips work already saved.
 """
@@ -56,7 +59,10 @@ def judge(settings: Settings, folder: Path, say=print, agent: Agents | None = No
     found = find(settings, folder, ready, say, agent)
     merged = merge(settings, folder, ready, say, agent)
     checked = check(settings, folder, ready, say, agent)
-    return found and merged and checked
+    from .compare import compare
+
+    compared = compare(settings, folder, ready, say, agent)
+    return found and merged and checked and compared
 
 
 # --- Automatic measurements -------------------------------------------------
@@ -204,17 +210,23 @@ def evidence(settings: Settings, folder: Path, trial: Trial, label: str) -> str:
     The build's own summary and its changes to the plan are left out: both can
     name the Variant, and a Judge should hold every build to the same plan.
     """
-    parts = [f"# Trial {label}\n"]
+    return "\n".join([f"# Trial {label}\n", *plan_parts(settings, folder), *trial_parts(trial)])
+
+
+def plan_parts(settings: Settings, folder: Path) -> list[str]:
     plan = folder / "plan"
-    if plan.is_dir():
-        parts.append(f"## The plan (at `{settings.plan_rel}` in the repository)\n")
-        for f in sorted(p for p in plan.rglob("*") if p.is_file()):
-            parts.append(f"### {f.relative_to(plan).as_posix()}\n\n{_text(f)}\n")
-    else:
-        parts.append("## The plan\n\nThere is no plan folder; the task was given as a prompt.\n")
+    if not plan.is_dir():
+        return ["## The plan\n\nThere is no plan folder; the task was given as a prompt.\n"]
+    parts = [f"## The plan (at `{settings.plan_rel}` in the repository)\n"]
+    for f in sorted(p for p in plan.rglob("*") if p.is_file()):
+        parts.append(f"### {f.relative_to(plan).as_posix()}\n\n{_text(f)}\n")
+    return parts
+
+
+def trial_parts(trial: Trial) -> list[str]:
+    """One Trial's diff, measurements and checks output."""
     diff = _text(trial.folder / "diff.patch")
-    parts.append(f"## Diff against the base commit\n\n{FOLDED}\n\n```diff\n{diff}```\n")
-    parts.append(facts(trial))
+    parts = [f"## Diff against the base commit\n\n{FOLDED}\n\n```diff\n{diff}```\n", facts(trial)]
     checks = (read_json(trial.folder / "measurements.json") or {}).get("checks") or {}
     if checks.get("ran"):
         output = _text(trial.folder / "checks.log")
@@ -224,7 +236,7 @@ def evidence(settings: Settings, folder: Path, trial: Trial, label: str) -> str:
             f"## Checks output\n\nCommand: `{checks['command']}`, exit code "
             f"{checks['exit_code']}.\n\n```\n{output}\n```\n"
         )
-    return "\n".join(parts)
+    return parts
 
 
 def _call(fn, timeout: float | None, agent: Agents):
@@ -334,44 +346,61 @@ def ask_about_trial(
     if j.type == "api":
         user = evidence(settings, folder, trial, label) + extra
         return _ask_api(settings, j, instructions, user, agent)
-    experiment = read_json(folder / "experiment.json") or {}
-    base = experiment.get("base_sha") or settings.base
+    base = base_commit(settings, folder)
     with tempfile.TemporaryDirectory(prefix="build-bench-judge-") as tmp:
         work = Path(tmp) / label
-        rebuilt = ""
-        if trial.workspace.is_dir():
-            shutil.copytree(trial.workspace, work, symlinks=True)
-        else:
-            _rebuild(settings, folder, trial, work, base)
-            rebuilt = (
-                " The folder holds only what git tracks: files git ignores (installed "
-                "dependencies, build output) are missing, so install what you need "
-                "before you run anything."
-            )
-        _blind_history(work, base)
-        if settings.plan_rel and (folder / "plan").is_dir():
-            # Every build is held to the plan as first written, not its own edits.
-            shutil.rmtree(work / settings.plan_rel, ignore_errors=True)
-            shutil.copytree(folder / "plan", work / settings.plan_rel, symlinks=True)
-        checks = (
-            f"The project's checks command is `{settings.checks}`."
-            if settings.checks
-            else "The settings name no checks command; find and run the project's own tests."
-        )
-        plan = (
-            f"The plan is in `{settings.plan_rel}/`, as it was before the build started."
-            if settings.plan_rel
-            else "There is no plan folder; the task was given as a prompt."
-        )
+        rebuilt = blind_copy(settings, folder, trial, work, base)
         prompt = (
             f"{instructions}\n\n---\n\n# Trial {label}\n\n"
             f"Your working folder is a copy of the build; change it as you like. "
             f"Every change the build made is uncommitted against the base commit "
-            f"`{base}`: see `git status` and `git diff {base}`.{rebuilt} {FOLDED} {plan} "
-            f"{checks}\n\n"
+            f"`{base}`: see `git status` and `git diff {base}`.{rebuilt} {FOLDED} "
+            f"{where_things_are(settings)}\n\n"
             f"{facts(trial)}{extra}"
         )
         return _ask_agent(settings, j, prompt, work, streams, agent)
+
+
+def base_commit(settings: Settings, folder: Path) -> str:
+    experiment = read_json(folder / "experiment.json") or {}
+    return experiment.get("base_sha") or settings.base
+
+
+def where_things_are(settings: Settings) -> str:
+    """Where an Agent Judge finds the plan, and the checks command."""
+    checks = (
+        f"The project's checks command is `{settings.checks}`."
+        if settings.checks
+        else "The settings name no checks command; find and run the project's own tests."
+    )
+    plan = (
+        f"The plan is in `{settings.plan_rel}/`, as it was before the build started."
+        if settings.plan_rel
+        else "There is no plan folder; the task was given as a prompt."
+    )
+    return f"{plan} {checks}"
+
+
+def blind_copy(settings: Settings, folder: Path, trial: Trial, work: Path, base: str) -> str:
+    """Put a copy of the Trial's build at `work` for an Agent Judge: every change
+    uncommitted on the base commit, and the plan as first written. Returns what to
+    tell the Judge when the copy had to be rebuilt, else nothing."""
+    rebuilt = ""
+    if trial.workspace.is_dir():
+        shutil.copytree(trial.workspace, work, symlinks=True)
+    else:
+        _rebuild(settings, folder, trial, work, base)
+        rebuilt = (
+            " The folder holds only what git tracks: files git ignores (installed "
+            "dependencies, build output) are missing, so install what you need "
+            "before you run anything."
+        )
+    _blind_history(work, base)
+    if settings.plan_rel and (folder / "plan").is_dir():
+        # Every build is held to the plan as first written, not its own edits.
+        shutil.rmtree(work / settings.plan_rel, ignore_errors=True)
+        shutil.copytree(folder / "plan", work / settings.plan_rel, symlinks=True)
+    return rebuilt
 
 
 def _rebuild(settings: Settings, folder: Path, trial: Trial, work: Path, base: str) -> None:
@@ -610,7 +639,8 @@ def merge(settings: Settings, folder: Path, trials: list[Trial], say, agent: Age
 
 
 def _with_severity(defects: list[dict], found: dict[str, dict]) -> list[dict]:
-    """Each Defect is as severe as its worst Finding."""
+    """Each Defect starts as severe as its worst Finding. Once the Judges have
+    checked for it, the report uses the severity they voted instead."""
     for defect in defects:
         defect["severity"] = min(
             (found[key]["severity"] for key in defect["findings"]), key=SEVERITIES.index
@@ -761,8 +791,15 @@ def check_answers(value: dict, asked: list[str]) -> dict[str, dict]:
                 f"{answer['id']} has present {answer.get('present')!r}, "
                 f"not one of {', '.join(PRESENT)}"
             )
+        severity = answer.get("severity") if answer.get("present") == "yes" else None
+        if answer.get("present") == "yes" and severity not in MERGED:
+            problems.append(
+                f"{answer['id']} is present with severity {severity!r}, "
+                f"not one of {', '.join(MERGED)}"
+            )
         clean[answer["id"]] = {
             "present": answer.get("present"),
+            "severity": severity,
             "where": _str(answer.get("where")),
             "evidence": _str(answer.get("evidence")),
         }

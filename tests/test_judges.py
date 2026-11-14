@@ -40,6 +40,8 @@ class Stub:
         self.reply = reply
         self.merge_reply = None
         self.present = "yes"
+        #: The answer to every Comparison: "1", "2" or "same".
+        self.better = "1"
         #: The cost the provider itself reports with each reply, as OpenRouter does.
         self.reported_cost = None
         self.sleep = sleep
@@ -62,6 +64,8 @@ class Stub:
                 reply = self.merge_reply or replies.merge_reply(text)
             elif kind == "check":
                 reply = replies.check_reply(text, self.present)
+            elif kind == "compare":
+                reply = replies.compare_reply(self.better)
             else:
                 reply = self.reply(number) if callable(self.reply) else self.reply
             return SimpleNamespace(
@@ -73,7 +77,7 @@ class Stub:
                 self.active -= 1
 
     def sent(self, kind: str) -> list[dict]:
-        """The requests of one step: find, merge or check."""
+        """The requests of one step: find, merge, check or compare."""
         return [
             r
             for r in self.requests
@@ -462,7 +466,9 @@ def test_every_judge_checks_every_trial_for_every_defect(experiment, fake, cli, 
 
     checked = defect_check(settings, "secretvariant-2", "two")
     assert checked["status"] == "ok"
-    assert checked["answers"] == {"D1": {"present": "no", "where": "calc.py:2", "evidence": "e"}}
+    assert checked["answers"] == {
+        "D1": {"present": "no", "severity": None, "where": "calc.py:2", "evidence": "e"}
+    }
     assert checked["cost_usd"] == 0.0042
 
 
@@ -499,6 +505,25 @@ def test_a_check_that_skips_a_defect_fails(experiment, fake, cli, stub, monkeypa
 
 
 # --- Agent Judge -------------------------------------------------------------------------
+
+
+def test_a_judge_that_says_yes_gives_the_severity_there(experiment, fake, cli, stub, monkeypatch):
+    settings = built(experiment, cli, judges=[api_judge()])
+    assert cli("judge", settings)[0] == 0
+    request = stub.sent("check")[0]
+    assert "give one severity" in request["messages"][0]["content"]
+    answer = defect_check(settings, "secretvariant-1", "diff-only")["answers"]["D1"]
+    assert (answer["present"], answer["severity"]) == ("yes", "minor")
+
+    # A yes with no severity, or one that is not a Defect's, fails the check.
+    def no_severity(prompt, present="yes"):
+        return replies.fenced({"answers": [{"id": "D1", "present": "yes", "severity": "nit"}]})
+
+    monkeypatch.setattr(replies, "check_reply", no_severity)
+    settings = built(experiment, cli, judges=[api_judge("another")])
+    code, out, _ = cli("judge", settings)
+    assert code == 1
+    assert "D1 is present with severity 'nit', not one of critical, major, minor" in out
 
 
 def agent_judge(**extra):

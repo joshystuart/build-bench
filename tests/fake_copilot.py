@@ -74,6 +74,8 @@ def main() -> int:
         said = control.get("merge_reply", replies.merge_reply(prompt))
     elif kind == "check":
         said = replies.check_reply(prompt, control.get("check_present", "yes"))
+    elif kind == "compare":
+        said = replies.compare_reply(control.get("compare_better", "1"))
     else:
         fake_claude._tick_plan(cwd)
         fake_claude._build(cwd, option("--model") or "?")

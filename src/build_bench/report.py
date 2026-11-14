@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import random
 from dataclasses import dataclass
+from itertools import combinations
+from math import comb
 from pathlib import Path
 from statistics import mean
 from typing import Any
@@ -25,6 +28,15 @@ OUTPUT = [
     ("test_added", "Test lines +", 0),
     ("test_removed", "Test lines -", 0),
 ]
+#: What the Differences table compares between two Variants; lower is better in each.
+COMPARED = [
+    ("defects", "Defects per Trial", 2),
+    ("cost_usd", "Cost ($)", 4),
+    ("total_minutes", "Time (min)", 2),
+]
+#: A difference is clear when chance alone gives one as large less than 1 time
+#: in 20, and possible when less than 1 time in 5.
+CLEAR, POSSIBLE = 0.05, 0.2
 AGENT_NAMES = {"claude": "Claude Code", "copilot": "Copilot CLI"}
 #: Defects a Trial has, by severity, then the nits its Judges listed.
 QUALITY = [(s, f"{s.capitalize()} defects", 2) for s in MERGED] + [("nit", "Nits", 2)]
@@ -43,6 +55,55 @@ def standing(votes: list[str]) -> str:
     if yes != no:
         return "present" if yes > no else "absent"
     return "disputed" if votes else "unchecked"
+
+
+def weight(chance: float | None) -> str | None:
+    """How a difference stands against chance: clear, possible or within noise."""
+    if chance is None:
+        return None
+    if chance <= CLEAR:
+        return "clear"
+    return "possible" if chance <= POSSIBLE else "within noise"
+
+
+def shuffle_chance(a: list[float], b: list[float]) -> float | None:
+    """How often dealing these Trials' numbers out to the two Variants at random
+    gives averages at least as far apart as they are. Every way of dealing them
+    is tried, or 20,000 random ones when there are too many."""
+    if not a or not b:
+        return None
+    pooled, n = a + b, len(a)
+    seen = abs(mean(a) - mean(b)) - 1e-9
+
+    def apart(first: tuple[int, ...]) -> bool:
+        chosen = set(first)
+        one = [pooled[i] for i in chosen]
+        other = [v for i, v in enumerate(pooled) if i not in chosen]
+        return abs(mean(one) - mean(other)) >= seen
+
+    places = range(len(pooled))
+    if comb(len(pooled), n) <= 100_000:
+        deals = list(combinations(places, n))
+    else:
+        dealer = random.Random(0)
+        deals = [tuple(dealer.sample(places, n)) for _ in range(20_000)]
+    return round(sum(1 for deal in deals if apart(deal)) / len(deals), 4)
+
+
+def coin_chance(wins: int, losses: int) -> float | None:
+    """How often a fair coin gives a split at least as uneven as this one."""
+    n = wins + losses
+    if not n:
+        return None
+    tail = sum(comb(n, k) for k in range(max(wins, losses), n + 1)) / 2**n
+    return round(min(1.0, 2 * tail), 4)
+
+
+def voted_severity(votes: list[str]) -> str | None:
+    """The middle of the severities the Judges gave; the worse of the two middle
+    ones when their number is even."""
+    ranked = sorted((v for v in votes if v in MERGED), key=SEVERITIES.index)
+    return ranked[(len(ranked) - 1) // 2] if ranked else None
 
 
 def _judging(saved: dict) -> dict:
@@ -115,6 +176,7 @@ def trial_row(trial, judges: list[str], defects: list[dict] | None) -> dict[str,
             if known
             else None
         )
+    row["defects_total"] = sum(row[s] for s in MERGED) if known else None
     nits = [found["nit"] for found in row["findings"].values()]
     row["nit"] = round(mean(nits), 2) if nits else None
     timeline = _timeline(m)
@@ -175,14 +237,106 @@ def _severity_order(defect: dict) -> tuple[int, int]:
     return SEVERITIES.index(defect["severity"]), int(number) if number.isdigit() else 0
 
 
+def _defects(merged: dict, trials: list, judges: list[str]) -> list[dict]:
+    """The Defects, worst first. A Defect is as severe as the Judges voted when
+    they said a Trial has it, or as its worst Finding until any has."""
+    votes: dict[str, list[str]] = {}
+    for trial in trials:
+        for name in judges:
+            checked = read_json(trial.folder / "defect-checks" / f"{name}.json") or {}
+            for defect, answer in (checked.get("answers") or {}).items():
+                if answer.get("present") == "yes" and answer.get("severity"):
+                    votes.setdefault(defect, []).append(answer["severity"])
+    found = []
+    for defect in merged.get("defects") or []:
+        mine = votes.get(defect["id"], [])
+        found.append(
+            {
+                **defect,
+                "severity": voted_severity(mine) or defect["severity"],
+                "found_severity": defect["severity"],
+                "severity_votes": len(mine),
+            }
+        )
+    return sorted(found, key=_severity_order)
+
+
+def _differences(variants: list[dict], rows: list[dict]) -> list[dict]:
+    """For each pair of Variants, how far apart their averages are and how that
+    stands against the spread between Trials of one Variant."""
+    out = []
+    for a, b in combinations([v["name"] for v in variants], 2):
+        measures: dict[str, dict | None] = {}
+        for key, _, decimals in COMPARED:
+            column = "defects_total" if key == "defects" else key
+            mine = [
+                [r[column] for r in rows if r["variant"] == name and r["status"] == "finished"]
+                for name in (a, b)
+            ]
+            one, other = ([v for v in values if v is not None] for values in mine)
+            if not one or not other:
+                measures[key] = None
+                continue
+            gap = mean(other) - mean(one)
+            chance = shuffle_chance(one, other)
+            measures[key] = {
+                "lower": None if abs(gap) < 1e-9 else (a if gap > 0 else b),
+                "by": _round(abs(gap), max(decimals, 2)),
+                "chance": chance,
+                "weight": weight(chance),
+            }
+        out.append({"variants": [a, b], "measures": measures})
+    return out
+
+
+def _comparisons(folder: Path, variants: list[dict], rows: list[dict], judges: list[str]):
+    """Every saved Comparison by a Judge in the settings, and the count of them
+    for each pair of Variants."""
+    variant_of = {r["trial"]: r["variant"] for r in rows}
+    saved = []
+    for name in judges:
+        for path in sorted((folder / "comparisons" / name).glob("*.json")):
+            record = read_json(path) or {}
+            if record.get("first") in variant_of and record.get("second") in variant_of:
+                saved.append({**record, "judge": name})
+    summary = []
+    for a, b in combinations([v["name"] for v in variants], 2):
+        mine = [
+            c
+            for c in saved
+            if c.get("status") == "ok"
+            and {variant_of[c["first"]], variant_of[c["second"]]} == {a, b}
+        ]
+        if not mine:
+            continue
+        wins = {
+            name: sum(1 for c in mine if c["better"] and variant_of[c["better"]] == name)
+            for name in (a, b)
+        }
+        chance = coin_chance(wins[a], wins[b])
+        summary.append(
+            {
+                "variants": [a, b],
+                "compared": len(mine),
+                "better": wins,
+                "same": len(mine) - wins[a] - wins[b],
+                "ahead": None if wins[a] == wins[b] else max(wins, key=lambda n: wins[n]),
+                "chance": chance,
+                "weight": weight(chance),
+            }
+        )
+    return saved, summary
+
+
 def build_report(settings: Settings, folder: Path) -> dict:
     experiment = read_json(folder / "experiment.json") or {}
     # Only the Judges in the settings file: a results folder can still hold the
     # Verdicts of Judges since removed, which would count as votes and as cost.
     judges = [j.name for j in settings.judges]
     merged = read_json(folder / "defects.json")
-    defects = sorted(merged.get("defects") or [], key=_severity_order) if merged else None
-    rows = [trial_row(t, judges, defects) for t in saved_trials(folder)]
+    trials = saved_trials(folder)
+    defects = _defects(merged, trials, judges) if merged else None
+    rows = [trial_row(t, judges, defects) for t in trials]
 
     order = [v.name for v in settings.variants]
     order += sorted({r["variant"] for r in rows} - set(order))
@@ -225,10 +379,16 @@ def build_report(settings: Settings, folder: Path) -> dict:
                 "disputed": found.count("disputed"),
                 "checked": len(found) - found.count("unchecked"),
             }
+        checked = sum(s["checked"] for s in standings.values())
         defect_rows.append(
             {
                 "id": defect["id"],
                 "severity": defect["severity"],
+                "found_severity": defect["found_severity"],
+                "severity_votes": defect["severity_votes"],
+                # A Defect every Trial has says nothing about which Variant is better.
+                "in_every_trial": checked > 1
+                and all(s["present"] == s["checked"] for s in standings.values()),
                 "title": defect["title"],
                 "description": defect["description"],
                 "findings": len(defect["findings"]),
@@ -237,12 +397,14 @@ def build_report(settings: Settings, folder: Path) -> dict:
             }
         )
 
+    compared, comparison_rows = _comparisons(folder, variants, rows, judges)
     judge_rows = []
     for j in judges:
         verdicts = [r["verdicts"][j] for r in rows if j in r["verdicts"]]
         checks = [r["defect_checks"][j] for r in rows if j in r["defect_checks"]]
         merges = [_judging(merged)] if merged and merged.get("judge") == j else []
-        every = verdicts + checks + merges
+        pairs = [_judging(c) for c in compared if c["judge"] == j]
+        every = verdicts + checks + merges + pairs
         costs = [v["cost_usd"] for v in every if v["cost_usd"] is not None]
         seconds = [v["seconds"] for v in every if v["seconds"] is not None]
         config = next((x for x in settings.judges if x.name == j), None)
@@ -253,6 +415,7 @@ def build_report(settings: Settings, folder: Path) -> dict:
                 "model": config.model if config else None,
                 "verdicts": sum(1 for v in verdicts if v["status"] == "ok"),
                 "checks": sum(1 for v in checks if v["status"] == "ok"),
+                "comparisons": sum(1 for v in pairs if v["status"] == "ok"),
                 "failed": sum(1 for v in every if v["status"] != "ok"),
                 "cost_usd": _round(sum(costs), 4) if costs else None,
                 "minutes": _round(sum(seconds) / 60, 2) if seconds else None,
@@ -265,6 +428,16 @@ def build_report(settings: Settings, folder: Path) -> dict:
         for r in rows
         for j, v in r[key].items()
         if v["status"] != "ok"
+    ]
+    failed_judging += [
+        {
+            "trial": f"{c['first']} with {c['second']}",
+            "judge": c["judge"],
+            "step": "comparison",
+            "reason": c.get("reason"),
+        }
+        for c in compared
+        if c.get("status") != "ok"
     ]
     if merged and merged.get("status") != "ok":
         failed_judging.append(
@@ -305,7 +478,9 @@ def build_report(settings: Settings, folder: Path) -> dict:
             and all("claude" in model.lower() for model in models),
         },
         "variants": variants,
+        "differences": _differences(variants, rows),
         "defects": defect_rows if defects is not None else None,
+        "comparisons": comparison_rows,
         "judges": judge_rows,
         "failed_trials": [
             {"trial": r["trial"], "reason": r["reason"], "final_message": r["final_message"]}
@@ -369,6 +544,31 @@ def _defect_cell(found: dict) -> str:
     return f"{found['present']}/{found['checked']}{disputed}"
 
 
+def _difference_cell(found: dict | None) -> str:
+    if found is None:
+        return "–"
+    if found["lower"] is None:
+        return "the same"
+    return f"{found['lower']} lower by {num(found['by'])}: {found['weight']}"
+
+
+def _defect_table(title: str, defects: list[dict], variants: list[dict], note: str) -> Table:
+    return Table(
+        title,
+        ["Defect", "Severity", "What is wrong", "Found by"] + [v["name"] for v in variants],
+        [
+            [d["id"], d["severity"], d["title"].replace("|", "/"), ", ".join(d["found_by"])]
+            + [_defect_cell(d["variants"][v["name"]]) for v in variants]
+            for d in defects
+        ],
+        note,
+    )
+
+
+def _comparison_result(c: dict) -> str:
+    return "even" if c["ahead"] is None else f"{c['ahead']} ahead: {c['weight']}"
+
+
 def tables(data: dict) -> list[Table]:
     """Every table of the report, in order, for the Markdown and the HTML alike."""
     variants = data["variants"]
@@ -399,30 +599,79 @@ def tables(data: dict) -> list[Table]:
             "are what one Judge listed for one Trial, on average.",
         ),
     ]
-    if data["defects"]:
+    if any(any(d["measures"].values()) for d in data["differences"]):
         found.append(
             Table(
-                "Defects",
-                ["Defect", "Severity", "What is wrong", "Found by"] + [v["name"] for v in variants],
+                "Differences",
+                ["Variants"] + [label for _, label, _ in COMPARED],
                 [
-                    [d["id"], d["severity"], d["title"].replace("|", "/"), ", ".join(d["found_by"])]
-                    + [_defect_cell(d["variants"][v["name"]]) for v in variants]
-                    for d in data["defects"]
+                    [" and ".join(d["variants"])]
+                    + [_difference_cell(d["measures"][k]) for k, _, _ in COMPARED]
+                    for d in data["differences"]
                 ],
-                "Each Variant's column is the Trials that have the Defect, of the Trials "
-                "checked for it. A Trial has a Defect when more of its Judges say it does than "
-                "say it does not; an even split is disputed.",
+                "Each cell names the Variant with the lower average and by how much, then "
+                "how that stands against the spread between Trials of the same Variant. "
+                "Clear: dealing the Trials out to the two Variants at random gives a "
+                "difference this large less than 1 time in 20. Possible: less than 1 time "
+                "in 5. Within noise: more often than that, so do not read it as a real "
+                "difference. With 3 Trials each, nothing can come out clear; it takes 4.",
+            )
+        )
+    differing = [d for d in data["defects"] or [] if not d["in_every_trial"]]
+    shared = [d for d in data["defects"] or [] if d["in_every_trial"]]
+    severity = (
+        " A Defect is as severe as the Judges who found it in a Trial voted: the middle "
+        "of their votes."
+    )
+    if differing:
+        found.append(
+            _defect_table(
+                "Defects",
+                differing,
+                variants,
+                "The Defects some Trials have and others do not. Each Variant's column is "
+                "the Trials that have the Defect, of the Trials checked for it. A Trial has "
+                "a Defect when more of its Judges say it does than say it does not; an even "
+                "split is disputed." + severity,
+            )
+        )
+    if shared:
+        found.append(
+            _defect_table(
+                "Defects in every Trial",
+                shared,
+                variants,
+                "Every Trial checked has these, so they say nothing about which Variant is "
+                "better. They usually point at a gap in the plan."
+                + ("" if differing else severity),
+            )
+        )
+    if data["comparisons"]:
+        found.append(
+            Table(
+                "Comparisons",
+                ["Variants", "Compared", "First better", "Second better", "Same", "Result"],
+                [
+                    [" and ".join(c["variants"]), str(c["compared"])]
+                    + [str(c["better"][name]) for name in c["variants"]]
+                    + [str(c["same"]), _comparison_result(c)]
+                    for c in data["comparisons"]
+                ],
+                "A Judge was shown two Trials, one of each Variant, without their names and "
+                "said which it would rather ship. The result weighs the split against a "
+                "coin toss, in the same words as the Differences table.",
             )
         )
     if data["judges"]:
         found.append(
             Table(
                 "Judges",
-                ["Judge", "Type", "Model", "Verdicts", "Defect checks", "Failed", "Cost ($)"]
-                + ["Time (min)"],
+                ["Judge", "Type", "Model", "Verdicts", "Defect checks", "Comparisons", "Failed"]
+                + ["Cost ($)", "Time (min)"],
                 [
                     [j["name"], j["type"] or "–", j["model"] or "–", str(j["verdicts"])]
-                    + [str(j["checks"]), str(j["failed"]), num(j["cost_usd"]), num(j["minutes"])]
+                    + [str(j["checks"]), str(j["comparisons"]), str(j["failed"])]
+                    + [num(j["cost_usd"]), num(j["minutes"])]
                     for j in data["judges"]
                 ],
                 "Judging cost and time, kept apart from the build numbers.",

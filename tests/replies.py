@@ -1,6 +1,6 @@
 """What a stand-in Judge replies, worked out from the prompt it was sent.
 
-The three judging steps are told apart by the reply shape each prompt asks for.
+The judging steps are told apart by the reply shape each prompt asks for.
 """
 
 import json
@@ -20,7 +20,9 @@ Mostly fine.
 
 
 def kind(prompt: str) -> str | None:
-    """Which step a prompt belongs to: find, merge or check; None for a build."""
+    """Which step a prompt belongs to: find, merge, check or compare; None for a build."""
+    if '"better"' in prompt:
+        return "compare"
     if '"answers"' in prompt:
         return "check"
     if '"defects"' in prompt:
@@ -44,5 +46,11 @@ def merge_reply(prompt: str) -> str:
 
 def check_reply(prompt: str, present: str = "yes") -> str:
     asked = re.findall(r"^### (D\d+):", prompt.split("## Known defects")[-1], flags=re.M)
-    answers = [{"id": d, "present": present, "where": "calc.py:2", "evidence": "e"} for d in asked]
-    return fenced({"answers": answers})
+    answer = {"present": present, "where": "calc.py:2", "evidence": "e"}
+    if present == "yes":
+        answer["severity"] = "minor"
+    return fenced({"answers": [{"id": d, **answer} for d in asked]})
+
+
+def compare_reply(better: str = "1") -> str:
+    return fenced({"better": better, "reason": "Build 1 handles failures."})
