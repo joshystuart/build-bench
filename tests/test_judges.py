@@ -40,6 +40,8 @@ class Stub:
         self.reply = reply
         self.merge_reply = None
         self.present = "yes"
+        #: The cost the provider itself reports with each reply, as OpenRouter does.
+        self.reported_cost = None
         self.sleep = sleep
         self.requests = []
         self.active = 0
@@ -63,7 +65,8 @@ class Stub:
             else:
                 reply = self.reply(number) if callable(self.reply) else self.reply
             return SimpleNamespace(
-                choices=[SimpleNamespace(message=SimpleNamespace(content=reply))]
+                choices=[SimpleNamespace(message=SimpleNamespace(content=reply))],
+                usage=SimpleNamespace(cost=self.reported_cost),
             )
         finally:
             with self.lock:
@@ -145,6 +148,25 @@ def test_api_judge_gets_the_evidence_and_saves_a_verdict(experiment, fake, cli, 
     assert found["cost_usd"] == 0.0042
     assert found["seconds"] >= 0
     assert re.fullmatch(r"trial-[0-9a-f]{6}", found["label"])
+
+
+def test_api_judge_cost_is_what_the_provider_reported_when_the_model_has_no_price(
+    experiment, fake, cli, stub, monkeypatch
+):
+    def no_price(completion_response):
+        raise ValueError("This model isn't mapped yet.")
+
+    monkeypatch.setattr(litellm, "completion_cost", no_price)
+    stub.reported_cost = 0.0125
+    settings = built(experiment, cli, judges=[api_judge()])
+    assert cli("judge", settings)[0] == 0
+    assert verdict(settings, "secretvariant-1", "diff-only")["cost_usd"] == 0.0125
+
+    # Neither a price nor a reported cost: unknown, not zero.
+    stub.reported_cost = None
+    settings = built(experiment, cli, judges=[api_judge("another")])
+    assert cli("judge", settings)[0] == 0
+    assert verdict(settings, "secretvariant-1", "another")["cost_usd"] is None
 
 
 def test_a_judge_never_sees_what_the_build_said_or_did_to_the_plan(experiment, fake, cli, stub):

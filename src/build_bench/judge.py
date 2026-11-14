@@ -275,11 +275,20 @@ def _ask_api(
         reply = response.choices[0].message.content or ""
     except (AttributeError, IndexError, KeyError, TypeError):
         raise JudgeFailed(f"unexpected reply shape: {response!r:.200}") from None
+    return reply, _api_cost(response)
+
+
+def _api_cost(response: Any) -> float | None:
+    """What one API call cost: from LiteLLM's price list, else what the provider
+    itself reported with the reply (OpenRouter does), else unknown."""
+    import litellm
+
     try:
-        cost = float(litellm.completion_cost(completion_response=response))
-    except Exception:  # noqa: BLE001 - unknown models have no price
-        cost = None
-    return reply, cost
+        return float(litellm.completion_cost(completion_response=response))
+    except Exception:  # noqa: BLE001 - LiteLLM's price list does not know every model
+        pass
+    reported = getattr(getattr(response, "usage", None), "cost", None)
+    return float(reported) if isinstance(reported, int | float) else None
 
 
 def _ask_agent(

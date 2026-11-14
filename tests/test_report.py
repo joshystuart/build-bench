@@ -382,6 +382,24 @@ def test_judge_cost_and_time_are_apart_from_the_build(saved, cli, no_models):
     assert data["variants"][0]["build"]["cost_usd"]["mean"] == 2.0
 
 
+def test_judges_no_longer_in_the_settings_are_left_out(saved, cli, no_models):
+    settings, folder = saved
+    cli("report", settings)
+    before = json.loads((folder / "report.json").read_text())
+    # What a Judge since removed from the settings left behind, one of them in the
+    # format of an older version.
+    t = folder / "trials" / "v2-2"
+    write(t / "verdicts" / "gone.json", {"judge": "gone", **ok("critical", "nit", cost=5.0)})
+    write(t / "defect-checks" / "gone.json", {"judge": "gone", **checked(D1="yes", D2="yes")})
+    write(
+        t / "verdicts" / "older.json",
+        {"judge": "older", "status": "ok", "scores": {"quality": 7}, "bugs": [], "cost_usd": 1.0},
+    )
+    cli("report", settings)
+    assert json.loads((folder / "report.json").read_text()) == before
+    assert "gone" not in (folder / "report.md").read_text()
+
+
 def test_flags(saved, cli, no_models):
     settings, folder = saved
     cli("report", settings)
