@@ -22,7 +22,8 @@ One line per Variant unless noted.
   plan.
 - **Comparisons:** one line per pair of Variants, when a Judge has `compare`
   set: how many pairs of Trials were compared and how often each Variant's
-  build was preferred.
+  build was preferred. A pair counts once, for the build more of its Judges
+  preferred than the other.
 - **Judges:** each Judge's Verdicts, Defect checks, Comparisons, failures,
   cost and time, kept apart from the build numbers. Only the Judges in the
   settings file are listed and counted: what a Judge since removed left in the

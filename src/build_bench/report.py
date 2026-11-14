@@ -61,9 +61,9 @@ def weight(chance: float | None) -> str | None:
     """How a difference stands against chance: clear, possible or within noise."""
     if chance is None:
         return None
-    if chance <= CLEAR:
+    if chance < CLEAR:
         return "clear"
-    return "possible" if chance <= POSSIBLE else "within noise"
+    return "possible" if chance < POSSIBLE else "within noise"
 
 
 def shuffle_chance(a: list[float], b: list[float]) -> float | None:
@@ -84,10 +84,11 @@ def shuffle_chance(a: list[float], b: list[float]) -> float | None:
     places = range(len(pooled))
     if comb(len(pooled), n) <= 100_000:
         deals = list(combinations(places, n))
-    else:
-        dealer = random.Random(0)
-        deals = [tuple(dealer.sample(places, n)) for _ in range(20_000)]
-    return round(sum(1 for deal in deals if apart(deal)) / len(deals), 4)
+        return round(sum(1 for deal in deals if apart(deal)) / len(deals), 4)
+    dealer = random.Random(0)
+    deals = [tuple(dealer.sample(places, n)) for _ in range(20_000)]
+    # The deal that happened counts as one, so a sample never says "never".
+    return round((sum(1 for deal in deals if apart(deal)) + 1) / (len(deals) + 1), 4)
 
 
 def coin_chance(wins: int, losses: int) -> float | None:
@@ -299,27 +300,32 @@ def _comparisons(folder: Path, variants: list[dict], rows: list[dict], judges: l
             record = read_json(path) or {}
             if record.get("first") in variant_of and record.get("second") in variant_of:
                 saved.append({**record, "judge": name})
+    # Two Judges asked about the same two Trials are not two independent answers,
+    # so each pair of Trials counts once: for the Trial more of its Judges preferred.
+    votes: dict[frozenset[str], list[str | None]] = {}
+    for c in saved:
+        if c.get("status") == "ok":
+            votes.setdefault(frozenset((c["first"], c["second"])), []).append(c.get("better"))
     summary = []
     for a, b in combinations([v["name"] for v in variants], 2):
-        mine = [
-            c
-            for c in saved
-            if c.get("status") == "ok"
-            and {variant_of[c["first"]], variant_of[c["second"]]} == {a, b}
-        ]
-        if not mine:
+        wins = {a: 0, b: 0}
+        compared = 0
+        for pair, answers in votes.items():
+            if {variant_of[t] for t in pair} != {a, b}:
+                continue
+            compared += 1
+            counts = sorted(((answers.count(t), t) for t in pair), reverse=True)
+            if counts[0][0] > counts[1][0]:
+                wins[variant_of[counts[0][1]]] += 1
+        if not compared:
             continue
-        wins = {
-            name: sum(1 for c in mine if c["better"] and variant_of[c["better"]] == name)
-            for name in (a, b)
-        }
         chance = coin_chance(wins[a], wins[b])
         summary.append(
             {
                 "variants": [a, b],
-                "compared": len(mine),
+                "compared": compared,
                 "better": wins,
-                "same": len(mine) - wins[a] - wins[b],
+                "same": compared - wins[a] - wins[b],
                 "ahead": None if wins[a] == wins[b] else max(wins, key=lambda n: wins[n]),
                 "chance": chance,
                 "weight": weight(chance),
@@ -388,7 +394,7 @@ def build_report(settings: Settings, folder: Path) -> dict:
                 "severity_votes": defect["severity_votes"],
                 # A Defect every Trial has says nothing about which Variant is better.
                 "in_every_trial": checked > 1
-                and all(s["present"] == s["checked"] for s in standings.values()),
+                and all(0 < s["present"] == s["checked"] for s in standings.values()),
                 "title": defect["title"],
                 "description": defect["description"],
                 "findings": len(defect["findings"]),
@@ -650,7 +656,8 @@ def tables(data: dict) -> list[Table]:
         found.append(
             Table(
                 "Comparisons",
-                ["Variants", "Compared", "First better", "Second better", "Same", "Result"],
+                ["Variants", "Pairs compared", "First named better", "Second named better"]
+                + ["Same", "Result"],
                 [
                     [" and ".join(c["variants"]), str(c["compared"])]
                     + [str(c["better"][name]) for name in c["variants"]]
@@ -658,8 +665,9 @@ def tables(data: dict) -> list[Table]:
                     for c in data["comparisons"]
                 ],
                 "A Judge was shown two Trials, one of each Variant, without their names and "
-                "said which it would rather ship. The result weighs the split against a "
-                "coin toss, in the same words as the Differences table.",
+                "said which it would rather ship. A pair of Trials counts once, for the one "
+                "more of its Judges preferred. The result weighs the split against a coin "
+                "toss, in the same words as the Differences table.",
             )
         )
     if data["judges"]:

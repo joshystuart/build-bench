@@ -428,6 +428,47 @@ def test_comparisons_are_counted_for_each_pair_of_variants(saved, cli, no_models
     assert "- v2-9 with v1-1 by j (comparison): no reply" in md
 
 
+def test_two_judges_on_the_same_pair_of_trials_count_once(experiment, cli, no_models):
+    settings = experiment(
+        variants=[
+            {"name": name, "prompt": "prompts/build.md", "model": "m", "repeats": 3}
+            for name in ("v1", "v2")
+        ],
+        judges=[{"name": n, "type": "api", "model": "openai/gpt-5"} for n in ("a", "b", "c")],
+    )
+    folder = settings.parent / ".bench" / "results" / "demo" / "20260101-000000"
+    write(folder / "experiment.json", {"name": "demo"})
+    for name in ("v1", "v2"):
+        for n in (1, 2, 3):
+            trial(folder, f"{name}-{n}")
+    # Pair 1: all three prefer v1. Pair 2: two of three prefer v2. Pair 3: a tie.
+    for judge, better in zip("abc", ["v1-1", "v1-1", "v1-1"], strict=True):
+        compared(folder, judge, "v1-1", "v2-1", better)
+    for judge, better in zip("abc", ["v2-2", "v1-2", "v2-2"], strict=True):
+        compared(folder, judge, "v2-2", "v1-2", better)
+    for judge, better in zip("ab", ["v1-3", "v2-3"], strict=True):
+        compared(folder, judge, "v1-3", "v2-3", better)
+    cli("report", settings)
+    data = json.loads((folder / "report.json").read_text())
+    (found,) = data["comparisons"]
+    # Eight answers, but three pairs of Trials: one each way and one undecided.
+    assert (found["compared"], found["better"], found["same"]) == (3, {"v1": 1, "v2": 1}, 1)
+    assert (found["ahead"], found["weight"]) == (None, "within noise")
+    assert [j["comparisons"] for j in data["judges"]] == [3, 3, 2]
+
+
+def test_a_defect_no_trial_of_a_variant_was_checked_for_is_not_in_every_trial(
+    saved, cli, no_models
+):
+    settings, folder = saved
+    shutil.rmtree(folder / "trials")
+    many(folder, "v1", [1.0, 1.0], [{"D1": "yes", "D2": "yes"}] * 2)
+    trial(folder, "v2-1")
+    cli("report", settings)
+    data = json.loads((folder / "report.json").read_text())
+    assert [d["in_every_trial"] for d in data["defects"]] == [False, False]
+
+
 def test_quality_before_any_judging(experiment, cli, no_models):
     settings = experiment(checks=None)
     folder = settings.parent / ".bench" / "results" / "demo" / "20260101-000000"

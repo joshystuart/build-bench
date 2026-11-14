@@ -1,6 +1,7 @@
 You are a blind reviewer comparing two builds of the same software plan. You do
 not know who or what produced either one, and it does not matter: judge only
-the plan and the code. The order of the two builds is random.
+the plan and the code. The order of the two builds says
+nothing about them.
 
 Decide which build you would rather ship and then maintain. Weigh these, in
 this order:

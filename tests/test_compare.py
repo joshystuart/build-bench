@@ -106,6 +106,25 @@ def test_an_agent_judge_compares_copies_of_both_builds(experiment, fake, cli):
     assert (only["first"], only["better"]) == ("secret-a-1", "secret-a-1")
 
 
+def test_with_three_variants_each_is_shown_first_as_often_as_second(tmp_path):
+    from build_bench.compare import pairs
+    from build_bench.results import Trial
+
+    trials = [Trial(tmp_path, name, 1, tmp_path) for name in "abc"]
+    chosen = [(first.variant, second.variant) for first, second in pairs(trials, 3)]
+    assert chosen == [("a", "b"), ("c", "a"), ("b", "c")]
+
+
+def test_a_failed_comparison_keeps_its_cost_when_asked_again(experiment, fake, cli, stub):  # noqa: F811
+    stub.better = "3"
+    settings = built(experiment, cli, judges=[api_judge(compare={"max_pairs": 1})])
+    assert cli("judge", settings)[0] == 1
+    stub.better = "1"
+    assert cli("judge", settings)[0] == 0
+    (only,) = comparisons(settings, "diff-only").values()
+    assert only["cost_usd"] == 0.0084
+
+
 def test_the_report_counts_the_comparisons(experiment, fake, cli, stub):  # noqa: F811
     settings = built(experiment, cli, judges=[api_judge(compare={"max_pairs": 4})])
     assert cli("judge", settings)[0] == 0

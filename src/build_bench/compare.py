@@ -52,7 +52,7 @@ def pairs(trials: list[Trial], most: int) -> list[tuple[Trial, Trial]]:
     by_variant: dict[str, list[Trial]] = {}
     for trial in trials:
         by_variant.setdefault(trial.variant, []).append(trial)
-    queues = []
+    queues: list[list[tuple[Trial, Trial]]] = []
     for a, b in combinations(by_variant.values(), 2):
         queue: list[tuple[Trial, Trial]] = []
         for shift in range(len(b)):
@@ -60,8 +60,11 @@ def pairs(trials: list[Trial], most: int) -> list[tuple[Trial, Trial]]:
                 pair = (a[i % len(a)], b[(i + shift) % len(b)])
                 if pair not in queue:
                     queue.append(pair)
-        # Which Variant is shown first alternates.
-        queues.append([pair if n % 2 == 0 else pair[::-1] for n, pair in enumerate(queue)])
+        # Which Variant is shown first alternates, along a queue and across them.
+        offset = len(queues)
+        queues.append(
+            [pair if (n + offset) % 2 == 0 else pair[::-1] for n, pair in enumerate(queue)]
+        )
     chosen: list[tuple[Trial, Trial]] = []
     turn = 0
     while len(chosen) < most and any(turn < len(q) for q in queues):
@@ -110,8 +113,19 @@ def compare(settings: Settings, folder: Path, trials: list[Trial], say, agent: A
             # `reason` is why a step failed, in every saved record; the Judge's own is `why`.
             return {"better": better, "why": _str(value.get("reason"))}
 
+        saved = read_json(path) or {}
+        kept = saved if saved.get("prompt_sha") == sha else {}
         record = _attempt(
-            _record(j, first=first.id, second=second.id, prompt_sha=sha, better=None, why=""),
+            _record(
+                j,
+                first=first.id,
+                second=second.id,
+                prompt_sha=sha,
+                cost_usd=kept.get("cost_usd"),
+                seconds=kept.get("seconds"),
+                better=None,
+                why="",
+            ),
             path,
             lambda: _ask(settings, folder, j, first, second, instructions, path, agent),
             parse,

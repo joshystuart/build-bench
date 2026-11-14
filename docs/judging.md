@@ -125,9 +125,12 @@ Experiment above, with two 100 KB diffs, a Comparison cost about $0.21 on
 `openrouter/openai/gpt-6.1-sol` and about $0.11 on a `gpt-6.1-terra` Agent
 Judge.
 
-Two Judges can prefer different builds of the same pair, so read the count,
-not single answers. Six or more decided Comparisons are needed before a
-one-sided result can stand clear of a coin toss.
+Two Judges can prefer different builds of the same pair, so the report counts
+each pair of Trials once, for the build more of its Judges preferred than the
+other (a tie counts as same). Six or more decided pairs are needed before a one-sided
+result can stand clear of a coin toss. When `max_pairs` is larger than the
+number of Trials, Trials are used in more than one pair; those pairs are not
+independent, so the result is then more confident than it should be.
 
 ## Failures and judging again
 
