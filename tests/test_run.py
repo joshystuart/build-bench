@@ -658,3 +658,69 @@ def test_nothing_past_the_base_reaches_the_trial(experiment, fake, cli, target_r
     objects = git(workspace, "cat-file", "--batch-all-objects", "--batch-check")
     assert later not in reflog and later not in objects
     assert git(target_repo, "tag", "--list") == "v1.0\n"
+
+
+# --- The checks on the base commit ------------------------------------------------
+
+
+def test_the_checks_are_run_on_the_base_commit_before_any_trial(experiment, fake, cli, tmp_path):
+    runs = tmp_path / "check-runs"
+    settings = experiment(
+        pre_build=["touch prepared"],
+        checks=f"test -f prepared && test ! -e later.txt && echo ran >> {runs}",
+    )
+    code, out, _ = cli("run", settings)
+    assert code == 0, out
+    assert out.index("on the base commit…") < out.index("The checks pass on the base commit.")
+    assert out.index("The checks pass on the base commit.") < out.index("[start] alpha-1")
+    folder = results_folder(settings)
+    saved = json.loads((folder / "base-checks.json").read_text())
+    assert saved["passed"] is True and saved["exit_code"] == 0
+    assert saved["base_sha"] == json.loads((folder / "experiment.json").read_text())["base_sha"]
+    assert "$ touch prepared" in (folder / "base-checks.log").read_text()
+    # The base's own workspace is gone; only the Trial's is left.
+    workspaces = Path(json.loads((folder / "experiment.json").read_text())["workspaces"])
+    assert [p.name for p in workspaces.iterdir()] == ["alpha-1"]
+
+    # A check that passed is not repeated when the run is resumed.
+    fake.set(per_cwd={"/alpha-2/": "crash"})
+    settings.write_text(settings.read_text().replace("effort: high", "effort: high\n  repeats: 2"))
+    assert cli("run", settings, "--resume")[0] == 1
+    assert runs.read_text() == "ran\n"
+
+
+def test_checks_that_fail_on_the_base_commit_stop_the_run(experiment, fake, cli):
+    settings = experiment(checks="echo sed: wrong flavour; exit 3")
+    code, out, err = cli("run", settings)
+    assert code == 2
+    assert "the checks (`echo sed: wrong flavour; exit 3`) fail on the base commit" in err
+    assert "with exit code 3, so no Trial could pass them. Nothing was built." in err
+    assert "  sed: wrong flavour" in err
+    assert "set `check_base: false` to build anyway" in err
+    folder = results_folder(settings)
+    assert f"The whole output is in {folder / 'base-checks.log'}" in err
+    assert json.loads((folder / "base-checks.json").read_text())["passed"] is False
+    assert fake.calls(judge=None) == []
+    assert not (folder / "trials").exists()
+
+    # Once the checks pass, the same results folder is finished.
+    settings.write_text(settings.read_text().replace("exit 3", "exit 0"))
+    assert cli("run", settings, "--resume")[0] == 0
+    assert len(fake.calls()) == 1
+
+
+def test_a_pre_build_step_that_fails_on_the_base_commit_stops_the_run(experiment, fake, cli):
+    settings = experiment(pre_build=["exit 7"], checks="true")
+    code, _, err = cli("run", settings)
+    assert code == 2
+    assert "pre_build: `exit 7` exited with code 7 on the base commit" in err
+    assert fake.calls(judge=None) == []
+
+
+def test_check_base_can_be_turned_off(experiment, fake, cli):
+    settings = experiment(checks="exit 3", check_base=False)
+    code, out, _ = cli("run", settings)
+    assert code == 0, out
+    assert "base commit" not in out
+    assert not (results_folder(settings) / "base-checks.json").exists()
+    assert len(fake.calls()) == 1

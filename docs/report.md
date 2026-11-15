@@ -35,7 +35,8 @@ Failed Trials, failed Verdicts, failed Defect checks and failed Comparisons
 are listed with their reasons. The report flags Trials that ran alongside
 others (time comparisons between them are weaker), an Experiment whose Trials
 used different agent versions, Judges that all share the builders' model
-family, and the login type. `report.json` holds every number, per Trial and
+family, checks that no Trial passed (with whether `run` saw them pass on the
+base commit), and the login type. `report.json` holds every number, per Trial and
 per Variant. `report.html` adds a timeline per Trial on one time scale, works
 offline, and has a "Show as table" alternative for every chart.
 
@@ -78,6 +79,7 @@ compare anything. Whatever separates them is noise.
 ```
 .bench/results/<experiment>/<start time>/       (or `results` from the settings)
   experiment.json  settings.yml  plan/  skills/<variant>/<skill>/
+  base-checks.json  base-checks.log
   trials/<variant>-<repeat>/
     status.json  prompt.md  stream.jsonl  stderr.log  summary.md
     transcript/main.jsonl  transcript/subagents/

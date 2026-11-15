@@ -25,6 +25,9 @@ and what is measured afterwards.
 - **Preparation:** `pre_build` steps run in the workspace first. Their time is
   not part of the Trial's time, and they use no tokens. A failing step fails
   the Trial before the agent starts.
+- **Checks on the base commit:** before the first Trial, `run` makes sure
+  `checks` passes on the base commit, and stops if it does not. See
+  [settings.md](settings.md#checks-on-the-base-commit).
 - **Output:** everything that differs from the base commit, committed or not,
   as one diff that leaves out files git ignores (so what `pre_build` installs
   does not count). The plan folder is diffed separately.

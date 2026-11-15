@@ -42,7 +42,7 @@ name: opus-vs-sonnet
 repo: .
 base: main                        # the commit every build starts from
 plan: docs/plans/my-feature
-checks: npm test                  # how to test a build
+checks: npm test                  # how to test a build; must pass on the base
 auth: subscription                # Claude Code's login
 variants:
   - name: opus

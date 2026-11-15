@@ -462,6 +462,8 @@ def build_report(settings: Settings, folder: Path) -> dict:
         )
         for kind in AGENT_NAMES
     }
+    ran_checks = [r for r in rows if r["checks_passed"] is not None]
+    base_checks = read_json(folder / "base-checks.json") or {}
     return {
         "experiment": experiment.get("name", settings.name),
         "results_folder": str(folder),
@@ -482,6 +484,11 @@ def build_report(settings: Settings, folder: Path) -> dict:
             # A Judge tends to go easy on work from its own model family.
             "judges_share_the_builders_family": bool(settings.judges)
             and all("claude" in model.lower() for model in models),
+            # Checks every Trial fails cannot tell one Variant from another.
+            "no_trial_passed_the_checks": bool(ran_checks)
+            and not any(r["checks_passed"] for r in ran_checks),
+            # Whether `run` saw the checks pass on the base commit, before any build.
+            "checks_passed_on_the_base": bool(base_checks.get("passed")),
         },
         "variants": variants,
         "differences": _differences(variants, rows),
@@ -736,6 +743,17 @@ def flag_lines(data: dict) -> list[str]:
         out.append(
             "- **Every Judge is a Claude model, like the builders.** A Judge tends to go "
             "easy on work from its own model family, so add a Judge from another provider."
+        )
+    if data["flags"]["no_trial_passed_the_checks"]:
+        out.append(
+            "- **No Trial passed the checks**, so they say nothing about which Variant is "
+            "better. "
+            + (
+                "They passed on the base commit, so each build broke them."
+                if data["flags"]["checks_passed_on_the_base"]
+                else "They were not seen to pass on the base commit, so they may fail "
+                "whatever is built: read `checks.log` before blaming the builds."
+            )
         )
     return out
 

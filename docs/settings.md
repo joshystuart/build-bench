@@ -14,6 +14,7 @@ plan: .scratch/my-plan          # optional; may be ignored by git
 results: .bench/results         # optional; this is the default
 pre_build: [npm ci]             # optional; run in each Trial before the agent
 checks: npm run check           # optional; run by `judge` in a copy of each Trial
+check_base: true                # optional; `run` first makes sure `checks` passes on `base` (the default)
 concurrency: 2                  # Trials (and Judges) at once
 auth: api-key                   # or: subscription; Claude Code's login, needed only if it is used
 auth_env: MY_ANTHROPIC_KEY      # optional; the variable holding the login
@@ -58,6 +59,20 @@ merge_judge: diff-only          # optional; the Judge that merges Findings (defa
 
 A settings file with missing or wrong fields is rejected before anything
 runs, with every problem named.
+
+## Checks on the base commit
+
+Checks that fail on the base commit fail in every Trial, whatever it builds,
+so they cannot tell one Variant from another. When `checks` is set, `run`
+therefore starts by running `pre_build` and then `checks` in a clone of the
+base commit. If either fails, `run` stops before any Trial is built, shows the
+end of the output and exits with code 2. The whole output is in
+`base-checks.log` in the results folder. A check that passed is not repeated
+by `run --resume`.
+
+Set `check_base: false` when the checks are meant to fail on the base commit,
+for example when the base already holds failing tests for the build to make
+pass.
 
 ## Logins and keys
 
