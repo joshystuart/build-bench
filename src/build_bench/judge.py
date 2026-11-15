@@ -31,7 +31,7 @@ from typing import Any
 from . import lines, transcript
 from .agent import STOPPED, AgentRequest, Agents
 from .results import Trial, read_json, saved_trials, write_json
-from .run import git, in_parallel, make_workspace
+from .run import checks_in, git, in_parallel, make_workspace
 from .settings import Judge, Settings, path_rules
 
 #: A Finding's severity, worst first.
@@ -102,33 +102,12 @@ def run_checks(settings: Settings, trial: Trial) -> dict:
         return {"ran": False, "reason": "the settings name no checks command"}
     if not trial.workspace.is_dir():
         return {"ran": False, "reason": "the Trial's workspace is not here (removed by clean?)"}
-    timeout = settings.limits.timeout_minutes
     with tempfile.TemporaryDirectory(prefix="build-bench-checks-") as tmp:
         copy = Path(tmp) / "trial"
         shutil.copytree(trial.workspace, copy, symlinks=True)
-        started = time.time()
-        try:
-            done = subprocess.run(
-                settings.checks,
-                shell=True,
-                cwd=copy,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                timeout=timeout * 60 if timeout else None,
-            )
-            output, code = done.stdout, done.returncode
-        except subprocess.TimeoutExpired as error:
-            output, code = error.stdout or b"", None
-    text = output.decode(errors="replace")
-    (trial.folder / "checks.log").write_text(text)
-    return {
-        "ran": True,
-        "command": settings.checks,
-        "passed": code == 0,
-        "exit_code": code,
-        "timed_out": code is None,
-        "seconds": round(time.time() - started, 3),
-    }
+        result, output = checks_in(settings, copy)
+    (trial.folder / "checks.log").write_text(output)
+    return result
 
 
 # --- Asking a Judge ------------------------------------------------------------

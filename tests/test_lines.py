@@ -151,7 +151,7 @@ def test_checks_run_in_a_throwaway_copy(experiment, fake, cli):
 
 
 def test_failing_checks_are_saved_as_failed(experiment, fake, cli):
-    settings = experiment(checks="echo nope && exit 3")
+    settings = experiment(checks="echo nope && exit 3", check_base=False)
     cli("run", settings)
     cli("judge", settings)
     measured = json.loads(

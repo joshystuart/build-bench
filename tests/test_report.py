@@ -753,3 +753,26 @@ def test_html_is_self_contained_with_shared_scale_timelines(saved, cli, no_model
     assert page.count("tabindex='0'") == 4 + 1  # four main agents, one subagent
     assert "data-tip='1m 00s\nexplore · v1-1\n" in page  # tooltip lines, longest first
     assert "prefers-color-scheme: dark" in page and "max-width: 600px" in page
+
+
+def test_checks_that_no_trial_passed_are_flagged(experiment, cli, no_models):
+    settings = experiment()
+    folder = settings.parent / ".bench" / "results" / "demo" / "20260101-000000"
+    write(folder / "experiment.json", {"name": "demo"})
+    trial(folder, "alpha-1", checks=False)
+    trial(folder, "alpha-2", checks=False)
+    flag = "**No Trial passed the checks**, so they say nothing about which Variant is better."
+
+    assert cli("report", settings)[0] == 0
+    md = (folder / "report.md").read_text()
+    assert f"{flag} They were not seen to pass on the base commit" in md
+    assert "No Trial passed the checks" in (folder / "report.html").read_text()
+
+    write(folder / "base-checks.json", {"ran": True, "passed": True})
+    cli("report", settings)
+    md = (folder / "report.md").read_text()
+    assert f"{flag} They passed on the base commit, so each build broke them." in md
+
+    trial(folder, "alpha-2", checks=True)
+    cli("report", settings)
+    assert "No Trial passed the checks" not in (folder / "report.md").read_text()

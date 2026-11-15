@@ -2,6 +2,7 @@
 
 <results>/<experiment>/<start time>/       (`results` defaults to .bench/results)
     experiment.json  settings.yml  plan/  skills/<variant>/<skill>/
+    base-checks.json  base-checks.log
     trials/<variant>-<repeat>/
         status.json  prompt.md  stream.jsonl  stderr.log  summary.md
         transcript/main.jsonl  transcript/subagents/

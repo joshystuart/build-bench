@@ -194,6 +194,8 @@ def run(
     skipped = len(planned) - len(todo)
     if skipped:
         say(f"Skipping {skipped} finished Trial(s).")
+    if todo:
+        check_base(settings, folder, say)
 
     lock = threading.Lock()
     display = Live(settings, planned, todo, hint=HOW_TO_STOP) if live and todo else None
@@ -217,6 +219,97 @@ def run(
 
     record_overlap(folder)
     return [t for t in planned_trials(settings, folder) if not t.finished]
+
+
+def checks_in(settings: Settings, cwd: Path) -> tuple[dict, str]:
+    """Run `checks` in `cwd`. Returns what happened and the command's output."""
+    assert settings.checks is not None
+    timeout = settings.limits.timeout_minutes
+    started = time.time()
+    try:
+        done = subprocess.run(
+            settings.checks,
+            shell=True,
+            cwd=cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=timeout * 60 if timeout else None,
+        )
+        output, code = done.stdout, done.returncode
+    except subprocess.TimeoutExpired as error:
+        output, code = error.stdout or b"", None
+    result = {
+        "ran": True,
+        "command": settings.checks,
+        "passed": code == 0,
+        "exit_code": code,
+        "timed_out": code is None,
+        "seconds": round(time.time() - started, 3),
+    }
+    return result, output.decode(errors="replace")
+
+
+#: How many lines of a failing base check's output the error shows.
+BASE_LOG_LINES = 20
+
+
+def check_base(settings: Settings, folder: Path, say=print) -> None:
+    """Make sure `pre_build` and `checks` pass on the base commit, before any Trial
+    is paid for: checks that fail there fail in every Trial, whatever it builds.
+
+    The result is saved in `base-checks.json`, so a resumed run does not repeat a
+    check that passed. Raises RunError when the base fails.
+    """
+    if not settings.checks or not settings.check_base:
+        return
+    saved = read_json(folder / "base-checks.json") or {}
+    if saved.get("passed") and saved.get("command") == settings.checks:
+        return
+    say(f"Running the checks (`{settings.checks}`) on the base commit…")
+    log = folder / "base-checks.log"
+    home = (workspaces(folder) or folder) / "base"
+    repo = home / "repo"
+    if home.exists():
+        shutil.rmtree(home)
+    result: dict = {}
+    try:
+        make_workspace(settings, folder, repo)
+        with log.open("w") as out:
+            for step in settings.pre_build:
+                out.write(f"$ {step}\n")
+                out.flush()
+                done = subprocess.run(step, shell=True, cwd=repo, stdout=out, stderr=out)
+                if done.returncode != 0:
+                    reason = f"pre_build: `{step}` exited with code {done.returncode}"
+                    result = {"ran": False, "passed": False, "reason": reason}
+                    break
+        if not result:
+            result, output = checks_in(settings, repo)
+            with log.open("a") as out:
+                out.write(f"$ {settings.checks}\n{output}")
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+    _redact_file(log, secrets(settings))
+    write_json(folder / "base-checks.json", {**result, "base_sha": settings.base_sha})
+    if result["passed"]:
+        say("The checks pass on the base commit.")
+        return
+    if not result["ran"]:
+        why = f"{result['reason']} on the base commit"
+    elif result["timed_out"]:
+        why = f"the checks (`{settings.checks}`) timed out on the base commit"
+    else:
+        why = (
+            f"the checks (`{settings.checks}`) fail on the base commit "
+            f"with exit code {result['exit_code']}"
+        )
+    tail = log.read_text(errors="replace").splitlines()[-BASE_LOG_LINES:]
+    raise RunError(
+        f"{why}, so no Trial could pass them. Nothing was built.\n"
+        + "".join(f"  {line}\n" for line in tail)
+        + f"The whole output is in {log}\n"
+        "Fix the checks on this machine, or set `check_base: false` to build anyway."
+    )
 
 
 def _minutes(seconds: float | None) -> str:
@@ -433,20 +526,22 @@ def save_diffs(settings: Settings, folder: Path, trial: Trial) -> None:
 
 def _redact(trial_folder: Path, hidden: list[str]) -> None:
     """Belt and braces: no saved file may hold a login's value."""
-    hidden = [secret for secret in hidden if len(secret) >= 8]
-    if not hidden:
-        return
     top = [p for p in trial_folder.iterdir() if p.name != "workspace"]
     files = [f for p in top for f in ([p] if p.is_file() else p.rglob("*")) if f.is_file()]
     for path in files:
-        try:
-            text = path.read_text()
-        except (UnicodeDecodeError, OSError):
-            continue
-        if any(secret in text for secret in hidden):
-            for secret in hidden:
-                text = text.replace(secret, "[redacted]")
-            path.write_text(text)
+        _redact_file(path, hidden)
+
+
+def _redact_file(path: Path, hidden: list[str]) -> None:
+    hidden = [secret for secret in hidden if len(secret) >= 8]
+    try:
+        text = path.read_text()
+    except (UnicodeDecodeError, OSError):
+        return
+    if any(secret in text for secret in hidden):
+        for secret in hidden:
+            text = text.replace(secret, "[redacted]")
+        path.write_text(text)
 
 
 def record_overlap(folder: Path) -> None:
