@@ -66,7 +66,7 @@ def test_a_changed_checks_setting_reruns_only_the_checks(experiment, fake, cli, 
     settings.write_text(change(settings.read_text(), runs))
     code, out, _ = cli("judge", settings)
     assert code == 0, out
-    assert "[checks again] alpha-1: the settings the checks ran under have changed" in out
+    assert "[checks again] alpha-1: the settings they ran under changed" in out
     assert ran(runs) == 4
     after = measured(settings)
     assert after["tokens"] == before["tokens"] and after["lines"] == before["lines"]
@@ -111,6 +111,30 @@ def test_fresh_judges_everything_again_from_nothing(experiment, fake, cli, tmp_p
     assert [d["id"] for d in defects["defects"]] == [d["id"] for d in first["defects"]] == ["D1"]
     assert defects["next_id"] == 2
     assert not stray.exists()
+
+
+def test_checks_that_could_not_run_run_again_once_they_can(experiment, fake, cli, tmp_path):
+    runs, ready = tmp_path / "runs", tmp_path / "ready"
+    settings = experiment(checks=counting(runs), check_base=False, copy_setup=[f"test -f {ready}"])
+    assert cli("run", settings)[0] == 0
+    cli("judge", settings)
+    assert ran(runs) == 0
+    ready.touch()
+    code, out, _ = cli("judge", settings)
+    assert code == 0, out
+    assert "[checks again] alpha-1: they did not run last time" in out
+    assert ran(runs) == 1 and measured(settings)["checks"]["ran"] is not False
+
+
+def test_fresh_keeps_the_checks_of_a_removed_workspace(experiment, fake, cli, tmp_path):
+    runs = tmp_path / "runs"
+    settings = built(experiment, cli, runs)
+    before = measured(settings)
+    assert cli("clean", settings)[0] == 0
+    code, out, _ = cli("judge", settings, "--fresh")
+    assert code == 0, out
+    assert measured(settings)["checks"] == before["checks"]
+    assert len(fake.calls(judge=True)) == 12  # every Verdict and Defect check asked again
 
 
 def test_all_does_not_take_fresh(experiment, fake, cli):

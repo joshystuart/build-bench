@@ -210,7 +210,8 @@ them.
 `judge` keeps what it saved and redoes only what has gone out of date:
 
 - **The checks** run again when a Check, `env`, `copy_setup`, `runtime_check`
-  or `checks_in_place` has changed since they last ran. The transcript and
+  or `checks_in_place` has changed since they last ran, or when they could not
+  run last time (a failed `copy_setup`, say). The transcript and
   line measurements are kept, and no Judge is asked again for that alone.
   Measurements saved before build-bench recorded these settings are kept while
   the settings are at their defaults and the checks command is the same.
@@ -225,8 +226,10 @@ them.
 `judge --fresh` judges a results folder again from nothing: it removes the
 measurements, the checks' logs, the Verdicts, the Defects, the Defect checks
 and the Comparisons, then runs every step, so the Defect ids start again from
-`D1`. It is how to try new settings without building again. `all` does not
-take `--fresh`, because it always starts a new results folder.
+`D1`. A Trial whose workspace `clean` removed keeps its measurements, as its
+checks could not run again. It is how to try new settings without building
+again. `all` does not take `--fresh`, because it always starts a new results
+folder.
 
 ## Why LiteLLM is pinned
 

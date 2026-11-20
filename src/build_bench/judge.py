@@ -97,14 +97,17 @@ def judge(
 def forget_judging(folder: Path, trials: list[Trial]) -> None:
     """Remove what `judge` saved in a results folder, so every step runs again
     and the Defect ids start from the first. A measurement whose workspace could
-    not be put back is kept: measuring it again would take the damage for the build."""
+    not be put back is kept: measuring it again would take the damage for the build.
+    So is one whose workspace is gone, as its checks could not run again."""
     for trial in trials:
-        if (read_json(trial.folder / "measurements.json") or {}).get("error"):
+        for name in ("verdicts", "defect-checks"):
+            shutil.rmtree(trial.folder / name, ignore_errors=True)
+        saved = read_json(trial.folder / "measurements.json") or {}
+        if saved.get("error") or not trial.workspace.is_dir():
             continue
         for name in ("measurements.json", "checks.log"):
             (trial.folder / name).unlink(missing_ok=True)
-        for name in ("checks", "verdicts", "defect-checks"):
-            shutil.rmtree(trial.folder / name, ignore_errors=True)
+        shutil.rmtree(trial.folder / "checks", ignore_errors=True)
     for path in folder.glob("defects.*"):
         path.unlink()
     shutil.rmtree(folder / "comparisons", ignore_errors=True)
@@ -139,8 +142,12 @@ def measure_trial(settings: Settings, folder: Path, trial: Trial, say=print) -> 
         saved = read_json(target)
         if saved.get("error"):
             say(f"[measure failed] {trial.id}: {saved['error']}")
-        elif checks_stale(settings, saved) and trial.workspace.is_dir():
-            say(f"[checks again] {trial.id}: the settings the checks ran under have changed")
+        elif trial.workspace.is_dir() and (
+            (not_run := bool(settings.checks) and (saved.get("checks") or {}).get("ran") is False)
+            or checks_stale(settings, saved)
+        ):
+            why = "they did not run last time" if not_run else "the settings they ran under changed"
+            say(f"[checks again] {trial.id}: {why}")
             (trial.folder / "checks.log").unlink(missing_ok=True)
             shutil.rmtree(trial.folder / "checks", ignore_errors=True)
             _measure_checks(settings, trial, saved)
