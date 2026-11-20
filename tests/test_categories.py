@@ -167,7 +167,10 @@ def test_the_report_counts_defects_per_category_behaviour_first(experiment, cli,
     assert "| v1 | 4/4 | 1 | 1 | 1 |" in md
     assert "| v2 | 4/4 | 1 | 0 | 1 |" in md
     assert "| Defect | Category | Severity | What is wrong | Found by | v1 | v2 |" in md
-    assert "| D1 | test-gap | critical | problem D1 | j | 4/4 | 0/4 |" in md
+    assert (
+        "| D1 | test-gap | critical | problem D1 | j | 4/4 · found 1, checked only 3 "
+        "| 0/4 · found 0, checked only 0 |" in md
+    )
     page = (folder / "report.html").read_text()
     assert "<th scope='col'>Test gaps</th>" in page and "<td>test-gap</td>" in page
 

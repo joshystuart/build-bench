@@ -23,6 +23,13 @@ One line per Variant unless noted.
   behaviour first, then test gaps and scope, worst first in each, with the Trials of each Variant that have it. A Trial has a
   Defect when more of its Judges say it does than say it does not; an even
   split is shown as disputed.
+- **Found and checked only:** every Defect table shows, beside the Trials of a
+  Variant that have a Defect, how many of them a Judge found it in with its own
+  Verdict ("found") and how many have it only because a Judge answered yes when
+  asked about it in a Defect check ("checked only"). A Trial where one Judge
+  found it and another only checked counts as found. Checked only is weaker
+  evidence: the Judge was told what to look for. Both come from the Findings
+  saved on each Defect, so results judged earlier show them too.
 - **Defects already in the base commit:** Defects most of the Judges' answers
   say the base commit already had (see [judging.md](judging.md#merging-and-the-base-commit)),
   with the Trials of each Variant that have them. No Variant caused them, so

@@ -448,17 +448,24 @@ def build_report(settings: Settings, folder: Path) -> dict:
 
     defect_rows = []
     for defect in defects or []:
+        # Each Finding's key names its Trial and Judge: the Trials where a Judge
+        # reported this Defect in its own Verdict.
+        reported_in = {
+            key.split("/")[0] for key in defect["findings"] if key.split("/")[1] in judges
+        }
         standings = {}
         for v in variants:
-            found = [
-                r["defects"].get(defect["id"], "unchecked")
-                for r in rows
-                if r["variant"] == v["name"] and r["status"] == "finished"
-            ]
+            mine = [r for r in rows if r["variant"] == v["name"] and r["status"] == "finished"]
+            found = [r["defects"].get(defect["id"], "unchecked") for r in mine]
+            has = [r for r in mine if r["defects"].get(defect["id"]) == "present"]
             standings[v["name"]] = {
                 "present": found.count("present"),
                 "disputed": found.count("disputed"),
                 "checked": len(found) - found.count("unchecked"),
+                # Of the Trials that have it: found by a Judge's own Verdict, or
+                # known only from a Defect check.
+                "found": sum(1 for r in has if r["trial"] in reported_in),
+                "checked_only": sum(1 for r in has if r["trial"] not in reported_in),
             }
         checked = sum(s["checked"] for s in standings.values())
         defect_rows.append(
@@ -661,7 +668,8 @@ def _defect_cell(found: dict) -> str:
     if not found["checked"]:
         return "–"
     disputed = f" ({found['disputed']} disputed)" if found["disputed"] else ""
-    return f"{found['present']}/{found['checked']}{disputed}"
+    discovery = f" · found {found['found']}, checked only {found['checked_only']}"
+    return f"{found['present']}/{found['checked']}{disputed}{discovery}"
 
 
 def _difference_cell(found: dict | None) -> str:

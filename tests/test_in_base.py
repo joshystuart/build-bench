@@ -119,7 +119,10 @@ def test_a_defect_most_judges_place_in_the_base_is_set_apart(experiment, cli, no
     assert difference["measures"]["defects"]["by"] == 1.0
     table = md.split("## Defects already in the base commit")[1]
     # The Judges voted it minor where they found it.
-    assert "| D1 | behaviour | minor | problem D1 | j | 4/4 | 4/4 |" in table
+    assert (
+        "| D1 | behaviour | minor | problem D1 | j | 4/4 · found 1, checked only 3 "
+        "| 4/4 · found 0, checked only 4 |" in table
+    )
     assert "| D1 |" not in md.split("## Defects already in the base commit")[0]
     assert "no Variant caused them" in table
 
