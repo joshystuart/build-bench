@@ -23,6 +23,12 @@ One line per Variant unless noted.
   behaviour first, then test gaps and scope, worst first in each, with the Trials of each Variant that have it. A Trial has a
   Defect when more of its Judges say it does than say it does not; an even
   split is shown as disputed.
+- **Defects already in the base commit:** Defects most of the Judges' answers
+  say the base commit already had (see [judging.md](judging.md#merging-and-the-base-commit)),
+  with the Trials of each Variant that have them. No Variant caused them, so
+  they are left out of every Variant's Defect counts and of the Differences
+  table. Defect checks saved before this question was asked count as not in
+  the base.
 - **Defects in every Trial:** the Defects every checked Trial has. They say
   nothing about which Variant is better, and usually point at a gap in the
   plan.

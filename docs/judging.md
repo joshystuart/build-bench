@@ -152,6 +152,22 @@ rejected and asked for again. The report weighs Variants on behaviour Defects
 only, so several test gaps cannot outvote one bug (see
 [report.md](report.md)).
 
+## Merging and the base commit
+
+The merge keeps two Findings apart when in doubt, because a wrong merge cannot
+be undone: Defects keep their ids. One rule joins Findings: test-gap Findings
+that one added test would close are the same Defect. A Defect keeps the key of
+every Finding merged into it.
+
+In the check step, every Judge that says a Trial has a Defect also says
+whether the base commit already had it: yes, no or unsure. An Agent Judge's
+copy holds the base commit in its history, so it is told how to read files as
+the base had them and how to stash the build to run the base; no separate
+checkout is made. An API Judge answers from the diff, so "unsure" is a normal
+answer there. A Defect is already in the base when more answers say yes than
+no, across every Judge and Trial, leaving out "unsure"; a tie is not in the
+base. The report lists such Defects apart and counts them for no Variant.
+
 ## Guidance for the Judges
 
 To steer every Judge without rewriting a prompt, name a Markdown file in

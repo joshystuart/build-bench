@@ -44,11 +44,12 @@ def merge_reply(prompt: str) -> str:
     return fenced({"defects": [{**new, "findings": findings}]})
 
 
-def check_reply(prompt: str, present: str = "yes") -> str:
+def check_reply(prompt: str, present: str = "yes", in_base: str = "no") -> str:
     asked = re.findall(r"^### (D\d+):", prompt.split("## Known defects")[-1], flags=re.M)
     answer = {"present": present, "where": "calc.py:2", "evidence": "e"}
     if present == "yes":
         answer["severity"] = "minor"
+        answer["in_base"] = in_base
     return fenced({"answers": [{"id": d, **answer} for d in asked]})
 
 

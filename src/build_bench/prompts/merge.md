@@ -14,6 +14,8 @@ Group the new findings below into distinct defects.
 - Findings of different categories (behaviour, test-gap, scope) are never the
   same defect, and a finding goes into an existing defect only when their
   categories match.
+- Test-gap findings that one added test would close are the same defect, even
+  when they name different cases or files.
 - When in doubt, keep them apart.
 
 Place every new finding in exactly one defect: either a defect that already

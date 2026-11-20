@@ -40,6 +40,8 @@ class Stub:
         self.reply = reply
         self.merge_reply = None
         self.present = "yes"
+        #: Whether each Defect present is already in the base commit.
+        self.in_base = "no"
         #: The answer to every Comparison: "1", "2" or "same".
         self.better = "1"
         #: The cost the provider itself reports with each reply, as OpenRouter does.
@@ -63,7 +65,7 @@ class Stub:
             if kind == "merge":
                 reply = self.merge_reply or replies.merge_reply(text)
             elif kind == "check":
-                reply = replies.check_reply(text, self.present)
+                reply = replies.check_reply(text, self.present, self.in_base)
             elif kind == "compare":
                 reply = replies.compare_reply(self.better)
             else:
@@ -490,7 +492,13 @@ def test_every_judge_checks_every_trial_for_every_defect(experiment, fake, cli, 
     checked = defect_check(settings, "secretvariant-2", "two")
     assert checked["status"] == "ok"
     assert checked["answers"] == {
-        "D1": {"present": "no", "severity": None, "where": "calc.py:2", "evidence": "e"}
+        "D1": {
+            "present": "no",
+            "severity": None,
+            "in_base": None,
+            "where": "calc.py:2",
+            "evidence": "e",
+        }
     }
     assert checked["cost_usd"] == 0.0042
 
@@ -539,7 +547,7 @@ def test_a_judge_that_says_yes_gives_the_severity_there(experiment, fake, cli, s
     assert (answer["present"], answer["severity"]) == ("yes", "minor")
 
     # A yes with no severity, or one that is not a Defect's, fails the check.
-    def no_severity(prompt, present="yes"):
+    def no_severity(prompt, present="yes", in_base="no"):
         return replies.fenced({"answers": [{"id": "D1", "present": "yes", "severity": "nit"}]})
 
     monkeypatch.setattr(replies, "check_reply", no_severity)

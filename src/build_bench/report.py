@@ -10,7 +10,7 @@ from pathlib import Path
 from statistics import mean
 from typing import Any
 
-from .judge import CATEGORIES, MERGED, SEVERITIES
+from .judge import CATEGORIES, MERGED, PRESENT, SEVERITIES
 from .results import read_json, saved_trials, write_json
 from .settings import Settings
 
@@ -185,18 +185,20 @@ def trial_row(
     # How many Defects of each severity the Trial has. Unknown until the Defects
     # are merged and, when there are any, until a Judge has checked this Trial.
     known = defects is not None and (not defects or any(v != [] for v in votes.values()))
+    # Defects the base commit already had were caused by no Variant.
+    counted = [d for d in defects or [] if not d.get("in_base")]
     for severity in MERGED:
         row[severity] = (
             sum(
                 1
-                for d in defects or []
+                for d in counted
                 if d["severity"] == severity and row["defects"][d["id"]] == "present"
             )
             if known
             else None
         )
     row["defects_total"] = sum(row[s] for s in MERGED) if known else None
-    present = [d for d in defects or [] if row["defects"][d["id"]] == "present"]
+    present = [d for d in counted if row["defects"][d["id"]] == "present"]
     row["categories"] = (
         {c: sum(1 for d in present if d["category"] == c) for c in CATEGORIES} if known else {}
     )
@@ -287,18 +289,26 @@ def _defects(merged: dict, trials: list, judges: list[str]) -> list[dict]:
     """The Defects, worst first. A Defect is as severe as the Judges voted when
     they said a Trial has it, or as its worst Finding until any has."""
     votes: dict[str, list[str]] = {}
+    base: dict[str, list[str]] = {}
     for trial in trials:
         for name in judges:
             checked = read_json(trial.folder / "defect-checks" / f"{name}.json") or {}
             for defect, answer in (checked.get("answers") or {}).items():
                 if answer.get("present") == "yes" and answer.get("severity"):
                     votes.setdefault(defect, []).append(answer["severity"])
+                if answer.get("present") == "yes" and answer.get("in_base") in PRESENT:
+                    base.setdefault(defect, []).append(answer["in_base"])
     found = []
     for defect in merged.get("defects") or []:
         mine = votes.get(defect["id"], [])
+        said = base.get(defect["id"], [])
         found.append(
             {
                 **defect,
+                # Already in the base commit when more answers say so than not,
+                # across every Judge and Trial; "unsure" settles nothing, a tie is no.
+                "in_base": said.count("yes") > said.count("no"),
+                "in_base_answers": {a: said.count(a) for a in PRESENT},
                 "category": defect.get("category") or UNCATEGORISED,
                 "severity": voted_severity(mine) or defect["severity"],
                 "found_severity": defect["severity"],
@@ -455,6 +465,8 @@ def build_report(settings: Settings, folder: Path) -> dict:
             {
                 "id": defect["id"],
                 "category": defect["category"],
+                "in_base": defect["in_base"],
+                "in_base_answers": defect["in_base_answers"],
                 "severity": defect["severity"],
                 "found_severity": defect["found_severity"],
                 "severity_votes": defect["severity_votes"],
@@ -767,8 +779,10 @@ def tables(data: dict) -> list[Table]:
                 "behaviour Defects are weighed in the Differences table.",
             )
         )
-    differing = [d for d in data["defects"] or [] if not d["in_every_trial"]]
-    shared = [d for d in data["defects"] or [] if d["in_every_trial"]]
+    caused = [d for d in data["defects"] or [] if not d["in_base"]]
+    in_base = [d for d in data["defects"] or [] if d["in_base"]]
+    differing = [d for d in caused if not d["in_every_trial"]]
+    shared = [d for d in caused if d["in_every_trial"]]
     severity = (
         " A Defect is as severe as the Judges who found it in a Trial voted: the middle "
         "of their votes."
@@ -795,6 +809,19 @@ def tables(data: dict) -> list[Table]:
                 "Every Trial checked has these, so they say nothing about which Variant is "
                 "better. They usually point at a gap in the plan."
                 + ("" if differing else severity),
+                categories,
+            )
+        )
+    if in_base:
+        found.append(
+            _defect_table(
+                "Defects already in the base commit",
+                in_base,
+                variants,
+                "More of the Judges' answers say the base commit already had these than say "
+                "it did not, so no Variant caused them. They are left out of every Variant's "
+                "Defect counts and of the Differences table. Each Variant's column is the "
+                "Trials that have the Defect, of the Trials checked for it.",
                 categories,
             )
         )

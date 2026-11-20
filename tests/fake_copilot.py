@@ -79,7 +79,9 @@ def main() -> int:
     elif kind == "merge":
         said = control.get("merge_reply", replies.merge_reply(prompt))
     elif kind == "check":
-        said = replies.check_reply(prompt, control.get("check_present", "yes"))
+        said = replies.check_reply(
+            prompt, control.get("check_present", "yes"), control.get("check_in_base", "no")
+        )
     elif kind == "compare":
         said = replies.compare_reply(control.get("compare_better", "1"))
     else:

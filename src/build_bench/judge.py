@@ -989,9 +989,15 @@ def check_answers(value: dict, asked: list[str]) -> dict[str, dict]:
                 f"{answer['id']} is present with severity {severity!r}, "
                 f"not one of {', '.join(MERGED)}"
             )
+        in_base = answer.get("in_base") if answer.get("present") == "yes" else None
+        if answer.get("present") == "yes" and in_base not in PRESENT:
+            problems.append(
+                f"{answer['id']} has in_base {in_base!r}, not one of {', '.join(PRESENT)}"
+            )
         clean[answer["id"]] = {
             "present": answer.get("present"),
             "severity": severity,
+            "in_base": in_base,
             "where": _str(answer.get("where")),
             "evidence": _str(answer.get("evidence")),
         }
