@@ -10,7 +10,7 @@ from pathlib import Path
 from statistics import mean
 from typing import Any
 
-from .judge import MERGED, SEVERITIES
+from .judge import CATEGORIES, MERGED, SEVERITIES
 from .results import read_json, saved_trials, write_json
 from .settings import Settings
 
@@ -30,7 +30,7 @@ OUTPUT = [
 ]
 #: What the Differences table compares between two Variants; lower is better in each.
 COMPARED = [
-    ("defects", "Defects per Trial", 2),
+    ("defects", "Behaviour defects per Trial", 2),
     ("cost_usd", "Cost ($)", 4),
     ("total_minutes", "Time (min)", 2),
 ]
@@ -40,6 +40,10 @@ CLEAR, POSSIBLE = 0.05, 0.2
 AGENT_NAMES = {"claude": "Claude Code", "copilot": "Copilot CLI"}
 #: Defects a Trial has, by severity, then the nits its Judges listed.
 QUALITY = [(s, f"{s.capitalize()} defects", 2) for s in MERGED] + [("nit", "Nits", 2)]
+#: The label for each category's column, in the order the report ranks them.
+CATEGORY_LABELS = {"behaviour": "Behaviour", "test-gap": "Test gaps", "scope": "Scope"}
+#: The category of a Defect merged before Defects had categories.
+UNCATEGORISED = "uncategorised"
 
 
 def _round(value: float | None, decimals: int) -> float | int | None:
@@ -192,6 +196,15 @@ def trial_row(
             else None
         )
     row["defects_total"] = sum(row[s] for s in MERGED) if known else None
+    present = [d for d in defects or [] if row["defects"][d["id"]] == "present"]
+    row["categories"] = (
+        {c: sum(1 for d in present if d["category"] == c) for c in CATEGORIES} if known else {}
+    )
+    # Weighed between Variants: behaviour Defects, and those merged before
+    # categories, which were all weighed then.
+    row["behaviour_defects"] = (
+        sum(1 for d in present if d["category"] in ("behaviour", UNCATEGORISED)) if known else None
+    )
     nits = [found["nit"] for found in row["findings"].values()]
     row["nit"] = round(mean(nits), 2) if nits else None
     timeline = _timeline(m)
@@ -259,9 +272,15 @@ def aggregate(values: list[float | int | None], decimals: int) -> dict:
     }
 
 
-def _severity_order(defect: dict) -> tuple[int, int]:
+def _severity_order(defect: dict) -> tuple[int, int, int]:
+    """Behaviour first, then test gaps, scope and the uncategorised; worst first in each."""
     number = defect["id"].lstrip("D")
-    return SEVERITIES.index(defect["severity"]), int(number) if number.isdigit() else 0
+    ranks = [*CATEGORIES, UNCATEGORISED]
+    return (
+        ranks.index(defect["category"]),
+        SEVERITIES.index(defect["severity"]),
+        int(number) if number.isdigit() else 0,
+    )
 
 
 def _defects(merged: dict, trials: list, judges: list[str]) -> list[dict]:
@@ -280,6 +299,7 @@ def _defects(merged: dict, trials: list, judges: list[str]) -> list[dict]:
         found.append(
             {
                 **defect,
+                "category": defect.get("category") or UNCATEGORISED,
                 "severity": voted_severity(mine) or defect["severity"],
                 "found_severity": defect["severity"],
                 "severity_votes": len(mine),
@@ -295,7 +315,7 @@ def _differences(variants: list[dict], rows: list[dict]) -> list[dict]:
     for a, b in combinations([v["name"] for v in variants], 2):
         measures: dict[str, dict | None] = {}
         for key, _, decimals in COMPARED:
-            column = "defects_total" if key == "defects" else key
+            column = "behaviour_defects" if key == "defects" else key
             mine = [
                 [r[column] for r in rows if r["variant"] == name and r["status"] == "finished"]
                 for name in (a, b)
@@ -408,6 +428,10 @@ def build_report(settings: Settings, folder: Path) -> dict:
                         if any(name in r["checks"] for r in rows)
                     },
                     **{k: aggregate([r[k] for r in done], d) for k, _, d in QUALITY},
+                    # Defects one Trial has, of each category.
+                    "categories": {
+                        c: aggregate([r["categories"].get(c) for r in done], 2) for c in CATEGORIES
+                    },
                 },
             }
         )
@@ -430,6 +454,7 @@ def build_report(settings: Settings, folder: Path) -> dict:
         defect_rows.append(
             {
                 "id": defect["id"],
+                "category": defect["category"],
                 "severity": defect["severity"],
                 "found_severity": defect["found_severity"],
                 "severity_votes": defect["severity_votes"],
@@ -635,12 +660,23 @@ def _difference_cell(found: dict | None) -> str:
     return f"{found['lower']} lower by {num(found['by'])}: {found['weight']}"
 
 
-def _defect_table(title: str, defects: list[dict], variants: list[dict], note: str) -> Table:
+def _categorised(data: dict) -> bool:
+    return any(d["category"] != UNCATEGORISED for d in data["defects"] or [])
+
+
+def _defect_table(
+    title: str, defects: list[dict], variants: list[dict], note: str, categories: bool
+) -> Table:
     return Table(
         title,
-        ["Defect", "Severity", "What is wrong", "Found by"] + [v["name"] for v in variants],
+        ["Defect"]
+        + (["Category"] if categories else [])
+        + ["Severity", "What is wrong", "Found by"]
+        + [v["name"] for v in variants],
         [
-            [d["id"], d["severity"], d["title"].replace("|", "/"), ", ".join(d["found_by"])]
+            [d["id"]]
+            + ([d["category"]] if categories else [])
+            + [d["severity"], d["title"].replace("|", "/"), ", ".join(d["found_by"])]
             + [_defect_cell(d["variants"][v["name"]]) for v in variants]
             for d in defects
         ],
@@ -709,7 +745,26 @@ def tables(data: dict) -> list[Table]:
                 "Clear: dealing the Trials out to the two Variants at random gives a "
                 "difference this large less than 1 time in 20. Possible: less than 1 time "
                 "in 5. Within noise: more often than that, so do not read it as a real "
-                "difference. With 3 Trials each, nothing can come out clear; it takes 4.",
+                "difference. With 3 Trials each, nothing can come out clear; it takes 4. "
+                "Only behaviour Defects (and Defects from before categories) are weighed; "
+                "test gaps and scope Defects are counted in the next table.",
+            )
+        )
+    categories = _categorised(data)
+    if categories:
+        found.append(
+            Table(
+                "Defects by category",
+                labels + list(CATEGORY_LABELS.values()),
+                [
+                    [v["name"], f"{v['finished']}/{v['trials']}"]
+                    + [cell(v["quality"]["categories"][c]) for c in CATEGORY_LABELS]
+                    for v in variants
+                ],
+                "The Defects one Trial has, of each category, on average. Behaviour: the code "
+                "does the wrong thing. Test gaps: the code is right but its tests would miss a "
+                "regression. Scope: the build and the plan disagree about what to build. Only "
+                "behaviour Defects are weighed in the Differences table.",
             )
         )
     differing = [d for d in data["defects"] or [] if not d["in_every_trial"]]
@@ -728,6 +783,7 @@ def tables(data: dict) -> list[Table]:
                 "the Trials that have the Defect, of the Trials checked for it. A Trial has "
                 "a Defect when more of its Judges say it does than say it does not; an even "
                 "split is disputed." + severity,
+                categories,
             )
         )
     if shared:
@@ -739,6 +795,7 @@ def tables(data: dict) -> list[Table]:
                 "Every Trial checked has these, so they say nothing about which Variant is "
                 "better. They usually point at a gap in the plan."
                 + ("" if differing else severity),
+                categories,
             )
         )
     if data["comparisons"]:

@@ -134,6 +134,24 @@ result can stand clear of a coin toss. When `max_pairs` is larger than the
 number of Trials, Trials are used in more than one pair; those pairs are not
 independent, so the result is then more confident than it should be.
 
+## Categories
+
+Every Finding has a category as well as a severity:
+
+- **behaviour:** the shipped code does the wrong thing, or not what the plan asks.
+- **test-gap:** the code is correct, but its tests would miss a regression.
+- **scope:** the build and the plan disagree about what to build, including a
+  plan that assumes something false about the base commit.
+
+A Verdict with a missing or unknown category fails, like one with a bad
+severity, and is asked for again next time. The merge Judge sees each
+Finding's category and names each new Defect's; a Defect it names none for
+takes the category most of its Findings have. Findings of different
+categories are never merged into one Defect: a merge reply that tries is
+rejected and asked for again. The report weighs Variants on behaviour Defects
+only, so several test gaps cannot outvote one bug (see
+[report.md](report.md)).
+
 ## Guidance for the Judges
 
 To steer every Judge without rewriting a prompt, name a Markdown file in

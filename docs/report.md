@@ -17,8 +17,10 @@ One line per Variant unless noted.
   result: passed, failed, timed out, or – when it was not run. Results saved
   before Checks had names count as one Check named `checks`.
 - **Differences:** one line per pair of Variants. See below.
+- **Defects by category:** the behaviour, test-gap and scope Defects one Trial
+  has, on average. Shown once any Defect has a category.
 - **Defects:** one line per Defect that some Trials have and others do not,
-  worst first, with the Trials of each Variant that have it. A Trial has a
+  behaviour first, then test gaps and scope, worst first in each, with the Trials of each Variant that have it. A Trial has a
   Defect when more of its Judges say it does than say it does not; an even
   split is shown as disputed.
 - **Defects in every Trial:** the Defects every checked Trial has. They say
@@ -52,7 +54,10 @@ offline, and has a "Show as table" alternative for every chart.
 
 Two Trials of the same Variant never come out the same, so a gap between two
 Variants' averages may be nothing but that spread. The Differences table
-weighs each gap against it, for Defects per Trial, cost and time.
+weighs each gap against it, for behaviour Defects per Trial, cost and time.
+Test-gap and scope Defects are counted in their own table and not weighed.
+Defects merged before categories existed show as uncategorised and are
+weighed, as they were then.
 
 Each cell names the Variant with the lower average and by how much, then one
 of three words:

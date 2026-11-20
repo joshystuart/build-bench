@@ -47,6 +47,8 @@ SEVERITIES = ("critical", "major", "minor", "nit")
 #: Nits are counted per Trial but never merged into Defects or checked.
 MERGED = SEVERITIES[:3]
 PRESENT = ("yes", "no", "unsure")
+#: What kind of problem a Finding or Defect is, in the order the report ranks them.
+CATEGORIES = ("behaviour", "test-gap", "scope")
 #: Judges are blind, so the build's own commits (whose messages can name the
 #: model) are never shown. Say so, or a Judge counts the missing commits against it.
 FOLDED = (
@@ -628,16 +630,22 @@ def check_findings(value: dict) -> dict:
             problems.append(f"finding {n} is not an object")
             continue
         title, severity = finding.get("title"), finding.get("severity")
+        category = finding.get("category")
         if not isinstance(title, str) or not title.strip():
             problems.append(f"finding {n} has no title")
         if severity not in SEVERITIES:
             problems.append(
                 f"finding {n} has severity {severity!r}, not one of {', '.join(SEVERITIES)}"
             )
+        if category not in CATEGORIES:
+            problems.append(
+                f"finding {n} has category {category!r}, not one of {', '.join(CATEGORIES)}"
+            )
         clean.append(
             {
                 "title": _str(title),
                 "severity": severity,
+                "category": category,
                 "where": _str(finding.get("where")),
                 "detail": _str(finding.get("detail")),
                 "reproduced": finding.get("reproduced") is True,
@@ -745,7 +753,9 @@ def merge(settings: Settings, folder: Path, trials: list[Trial], say, agent: Age
         return True
 
     def parse(reply: str) -> dict:
-        groups = check_groups(reply_json(reply, "defects"), {d["id"] for d in defects}, pending)
+        kinds = {name: found[key].get("category") for name, key in pending.items()}
+        existing = {d["id"]: d.get("category") for d in defects}
+        groups = check_groups(reply_json(reply, "defects"), existing, kinds)
         by_id = {d["id"]: d for d in defects}
         number = record["next_id"]
         for group in groups:
@@ -755,9 +765,11 @@ def merge(settings: Settings, folder: Path, trials: list[Trial], say, agent: Age
                 continue
             if group.get("left_out"):
                 # The reply skipped this Finding: it stands as a Defect in its own words.
-                group = {"title": found[keys[0]]["title"], "detail": found[keys[0]]["detail"]}
+                first = found[keys[0]]
+                group = {**group, "title": first["title"], "detail": first["detail"]}
             new = {"id": f"D{number}", "title": group["title"], "description": group["detail"]}
-            defects.append({**new, "findings": keys})
+            category = group["category"] or most_common([kinds[f] for f in group["findings"]])
+            defects.append({**new, "category": category, "findings": keys})
             number += 1
         return {"defects": _with_severity(defects, found), "next_id": number}
 
@@ -791,27 +803,46 @@ def _with_severity(defects: list[dict], found: dict[str, dict]) -> list[dict]:
     return defects
 
 
+def most_common(categories: list[str | None]) -> str | None:
+    """The category most of these have; on a tie, the one ranked first."""
+    known = [c for c in categories if c in CATEGORIES]
+    if not known:
+        return None
+    return max(CATEGORIES, key=lambda c: (known.count(c), -CATEGORIES.index(c)))
+
+
+def _category_line(category: str | None) -> str:
+    return f"Category: {category}. " if category else ""
+
+
 def merge_request(defects: list[dict], pending: dict[str, str], found: dict[str, dict]) -> str:
     parts = ["## Existing defects\n"]
     if not defects:
         parts.append("None yet.\n")
     for defect in defects:
-        parts.append(f"### {defect['id']}: {defect['title']}\n\n{defect['description']}\n")
+        parts.append(
+            f"### {defect['id']}: {defect['title']}\n\n"
+            f"{_category_line(defect.get('category'))}{defect['description']}\n"
+        )
     parts.append("## New findings\n")
     for name, key in pending.items():
         finding = found[key]
         parts.append(
-            f"### {name}: {finding['title']}\n\n"
+            f"### {name}: {finding['title']}\n\n{_category_line(finding.get('category'))}"
             f"Where: {finding['where'] or 'not given'}\n\n{finding['detail']}\n"
         )
     return "\n".join(parts)
 
 
-def check_groups(value: dict, existing: set[str], pending: dict[str, str]) -> list[dict]:
+def check_groups(
+    value: dict, existing: dict[str, str | None], pending: dict[str, str | None]
+) -> list[dict]:
     """The merge reply as groups of new Findings, each placed exactly once.
+    `existing` gives each Defect's category and `pending` each new Finding's.
 
     A Finding named twice stays where it was named first. One the reply leaves
-    out becomes a Defect of its own, so no Finding is ever lost.
+    out becomes a Defect of its own, so no Finding is ever lost. Findings of
+    different categories never share a Defect.
     """
     groups = value.get("defects")
     if not isinstance(groups, list):
@@ -831,19 +862,37 @@ def check_groups(value: dict, existing: set[str], pending: dict[str, str]) -> li
         new = group.get("id") not in existing
         if new and not _str(group.get("title")):
             problems.append(f"defect {n} is new but has no title")
+        category = group.get("category") if new else existing[group["id"]]
+        if new and category is not None and category not in CATEGORIES:
+            problems.append(
+                f"defect {n} has category {category!r}, not one of {', '.join(CATEGORIES)}"
+            )
+        kinds = {pending[f] for f in names} | ({category} if category in CATEGORIES else set())
+        kinds.discard(None)
+        if len(kinds) > 1:
+            listed = ", ".join(c for c in CATEGORIES if c in kinds)
+            problems.append(f"defect {n} mixes findings of different categories: {listed}")
         if names:
             clean.append(
                 {
                     "id": group.get("id"),
                     "title": _str(group.get("title")),
                     "detail": _str(group.get("description")),
+                    "category": category if new else None,
                     "findings": names,
                 }
             )
     if problems:
         raise VerdictError("; ".join(problems))
     return clean + [
-        {"id": None, "title": name, "detail": "", "findings": [name], "left_out": True}
+        {
+            "id": None,
+            "title": name,
+            "detail": "",
+            "category": pending[name],
+            "findings": [name],
+            "left_out": True,
+        }
         for name in pending
         if name not in seen
     ]

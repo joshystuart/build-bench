@@ -11,9 +11,9 @@ Mostly fine.
 
 ```json
 {"findings": [
-  {"title": "mul is missing", "severity": "major", "where": "calc.py:2",
-   "detail": "The plan asks for mul.", "reproduced": true},
-  {"title": "odd name", "severity": "nit"}],
+  {"title": "mul is missing", "severity": "major", "category": "behaviour",
+   "where": "calc.py:2", "detail": "The plan asks for mul.", "reproduced": true},
+  {"title": "odd name", "severity": "nit", "category": "behaviour"}],
  "note": "Fine."}
 ```
 """

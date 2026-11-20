@@ -142,11 +142,19 @@ def test_api_judge_gets_the_evidence_and_saves_a_verdict(experiment, fake, cli, 
         {
             "title": "mul is missing",
             "severity": "major",
+            "category": "behaviour",
             "where": "calc.py:2",
             "detail": "The plan asks for mul.",
             "reproduced": True,
         },
-        {"title": "odd name", "severity": "nit", "where": "", "detail": "", "reproduced": False},
+        {
+            "title": "odd name",
+            "severity": "nit",
+            "category": "behaviour",
+            "where": "",
+            "detail": "",
+            "reproduced": False,
+        },
     ]
     assert found["note"] == "Fine."
     assert found["cost_usd"] == 0.0042
@@ -338,7 +346,13 @@ def test_a_copilot_judge_logs_in_before_anything_starts(experiment, fake, cli, s
 
 def two_findings(first: str, second: str) -> str:
     def one(title):
-        return {"title": title, "severity": "minor", "where": "calc.py:1", "detail": f"{title}!"}
+        return {
+            "title": title,
+            "severity": "minor",
+            "category": "behaviour",
+            "where": "calc.py:1",
+            "detail": f"{title}!",
+        }
 
     return replies.fenced({"findings": [one(first), one(second)], "note": ""})
 
@@ -351,7 +365,10 @@ def test_findings_are_merged_into_the_experiments_defects(experiment, fake, cli,
     [request] = stub.sent("merge")
     asked = request["messages"][1]["content"]
     assert "None yet." in asked
-    assert "### F1: mul is missing\n\nWhere: calc.py:2\n\nThe plan asks for mul." in asked
+    assert (
+        "### F1: mul is missing\n\nCategory: behaviour. Where: calc.py:2\n\nThe plan asks for mul."
+        in asked
+    )
     assert "### F2: mul is missing" in asked
     assert "odd name" not in asked  # nits are counted, never merged
 
@@ -371,7 +388,13 @@ def test_a_defect_is_as_severe_as_its_worst_finding_and_keeps_its_id(experiment,
     assert cli("judge", settings)[0] == 0
     stub.requests.clear()
 
-    worse = {"title": "mul loses data", "severity": "critical", "where": "", "detail": ""}
+    worse = {
+        "title": "mul loses data",
+        "severity": "critical",
+        "category": "behaviour",
+        "where": "",
+        "detail": "",
+    }
     stub.reply = replies.fenced({"findings": [worse], "note": ""})
     settings = experiment(
         variants=VARIANTS,
@@ -382,7 +405,7 @@ def test_a_defect_is_as_severe_as_its_worst_finding_and_keeps_its_id(experiment,
     # Only judge two's new Findings are placed, and the existing Defect is offered for them.
     [request] = stub.sent("merge")
     asked = request["messages"][1]["content"]
-    assert "### D1: mul is missing\n\nLook for mul in calc.py." in asked
+    assert "### D1: mul is missing\n\nCategory: behaviour. Look for mul in calc.py." in asked
     assert asked.count("### F") == 2 and "mul loses data" in asked
     [defect] = saved(settings, "defects.json")["defects"]
     assert (defect["id"], defect["severity"], len(defect["findings"])) == ("D1", "critical", 4)

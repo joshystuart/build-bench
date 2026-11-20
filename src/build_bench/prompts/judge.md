@@ -31,6 +31,17 @@ Give every finding one severity:
 - **minor**: wrong only in an edge case, or a risky path left untested.
 - **nit**: nothing behaves wrongly. Style, naming, duplication, small tidy-ups.
 
+Give every finding one category, for what kind of problem it is:
+
+- **behaviour**: the shipped code does the wrong thing, or does not do what the
+  plan asks.
+- **test-gap**: the code is correct, but its tests would miss a regression.
+- **scope**: the build and the plan disagree about what to build: it does more
+  or other than the plan asks, or the plan assumes something that is false for
+  the base commit.
+
+For a nit, pick the category closest to what it is about.
+
 Report one finding per distinct problem. Do not split one problem into several
 or pad the list; a build with nothing wrong has an empty list.
 
@@ -43,6 +54,7 @@ Write a short review in prose first. Then end with only a JSON object in a
     {
       "title": "One line naming the problem",
       "severity": "major",
+      "category": "behaviour",
       "where": "path/to/file.rs:120",
       "detail": "What goes wrong, when, and what the plan says should happen.",
       "reproduced": false
