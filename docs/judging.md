@@ -47,7 +47,9 @@ those files.
   or Copilot CLI agent in a throwaway copy of the workspace with an empty
   config folder. The build's commits are folded into uncommitted changes on the
   base commit, since commit messages can name the model. It can open files,
-  run the checks and write a test to reproduce a problem. When the workspace is
+  run the checks and write a test to reproduce a problem. `copy_setup` runs in
+  the copy before the Judge starts (see
+  [settings.md](settings.md#where-the-checks-run)). When the workspace is
   not there (after `clean`, or when the results folder was copied from another
   machine), it gets the base commit with the Trial's saved diff applied
   instead, which leaves out files git ignores. That needs `repo` to hold the

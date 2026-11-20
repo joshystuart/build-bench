@@ -31,7 +31,7 @@ from typing import Any
 from . import lines, transcript
 from .agent import STOPPED, AgentRequest, Agents
 from .results import Trial, read_json, saved_trials, write_json
-from .run import checks_in, git, in_parallel, make_workspace
+from .run import checks_in, git, in_parallel, make_workspace, run_steps
 from .settings import Judge, Settings, path_rules
 
 #: A Finding's severity, worst first.
@@ -53,16 +53,20 @@ def judge(settings: Settings, folder: Path, say=print, agent: Agents | None = No
     """Measure, then find, merge and check. Returns False if any step failed."""
     agent = agent or Agents()
     trials = saved_trials(folder)
-    for trial in trials:
-        measure_trial(settings, folder, trial, say)
-    ready = [t for t in trials if t.finished and (t.folder / "measurements.json").exists()]
+    measured = [measure_trial(settings, folder, trial, say) for trial in trials]
+    ready = [
+        t
+        for t, m in zip(trials, measured, strict=True)
+        if t.finished and m is not None and not m.get("error")
+    ]
     found = find(settings, folder, ready, say, agent)
     merged = merge(settings, folder, ready, say, agent)
     checked = check(settings, folder, ready, say, agent)
     from .compare import compare
 
     compared = compare(settings, folder, ready, say, agent)
-    return found and merged and checked and compared
+    unmeasured = any(m and m.get("error") for m in measured)
+    return found and merged and checked and compared and not unmeasured
 
 
 # --- Automatic measurements -------------------------------------------------
@@ -74,7 +78,10 @@ def measure_trial(settings: Settings, folder: Path, trial: Trial, say=print) -> 
         say(f"[skip]  {trial.id}: the Trial failed, so it is not measured")
         return None
     if target.exists():
-        return read_json(target)
+        saved = read_json(target)
+        if saved.get("error"):
+            say(f"[measure failed] {trial.id}: {saved['error']}")
+        return saved
 
     prices = {**transcript.default_prices(), **settings.prices}
     measured: dict[str, Any] = {}
@@ -86,9 +93,17 @@ def measure_trial(settings: Settings, folder: Path, trial: Trial, say=print) -> 
     test_paths, ignore_paths, rust_inline = path_rules(settings)
     diff = _text(trial.folder / "diff-full.patch") or _text(trial.folder / "diff.patch")
     measured["lines"] = lines.count_lines(diff, test_paths, ignore_paths, rust_inline)
-    measured["checks"] = run_checks(settings, trial)
+    try:
+        measured["checks"] = run_checks(settings, trial)
+    except RestoreFailed as error:
+        # The workspace no longer holds what the build left, so judging it would
+        # judge the checks. It stays failed until it is measured from nothing.
+        measured["error"] = str(error)
     write_json(target, measured)
-    say(f"[measured] {trial.id}")
+    if measured.get("error"):
+        say(f"[measure failed] {trial.id}: {measured['error']}")
+    else:
+        say(f"[measured] {trial.id}")
     return measured
 
 
@@ -97,17 +112,84 @@ def _text(path: Path) -> str:
 
 
 def run_checks(settings: Settings, trial: Trial) -> dict:
-    """Run `checks` in a throwaway copy, so the saved workspace never changes."""
+    """Run `checks` in a throwaway copy, so the saved workspace never changes, or
+    with `checks_in_place` in the workspace itself."""
     if not settings.checks:
         return {"ran": False, "reason": "the settings name no checks command"}
     if not trial.workspace.is_dir():
         return {"ran": False, "reason": "the Trial's workspace is not here (removed by clean?)"}
+    if settings.checks_in_place:
+        with tempfile.TemporaryDirectory(prefix="build-bench-snapshot-") as tmp:
+            index = Path(tmp) / "index"
+            try:
+                before = _snapshot(trial.workspace, index)
+            except (RuntimeError, OSError) as error:
+                return {"ran": False, "reason": f"the workspace could not be saved: {error}"}
+            result, output = checks_in(settings, trial.workspace)
+            (trial.folder / "checks.log").write_text(output)
+            _put_back(trial.workspace, index, before)
+        return result
+    log = trial.folder / "checks.log"
     with tempfile.TemporaryDirectory(prefix="build-bench-checks-") as tmp:
         copy = Path(tmp) / "trial"
         shutil.copytree(trial.workspace, copy, symlinks=True)
+        with log.open("w") as out:
+            failure = set_up_copy(settings, trial, copy, out)
+        if failure:
+            return {"ran": False, "reason": failure}
         result, output = checks_in(settings, copy)
-    (trial.folder / "checks.log").write_text(output)
+    with log.open("a") as out:
+        out.write(output)
     return result
+
+
+#: The variable that tells `copy_setup` where the Trial's own workspace is.
+WORKSPACE_VARIABLE = "BUILD_BENCH_WORKSPACE"
+
+
+def set_up_copy(settings: Settings, trial: Trial, copy: Path, out) -> str | None:
+    """Run `copy_setup` in a throwaway copy of `trial`. Returns why it failed, if it did."""
+    env = {**os.environ, WORKSPACE_VARIABLE: str(trial.workspace)}
+    return run_steps("copy_setup", settings.copy_setup, copy, out, env=env)
+
+
+class RestoreFailed(Exception):
+    """The workspace could not be put back as it was before the checks."""
+
+
+def _snapshot(repo: Path, index: Path) -> str:
+    """Every file git tracks or could track in `repo`, as a tree saved in its object
+    store, staged in the separate `index`. The real index is copied beside it."""
+    real = repo / ".git" / "index"
+    if real.exists():
+        shutil.copyfile(real, index)
+        shutil.copyfile(real, index.with_name("real-index"))
+    git(repo, "add", "--all", env={"GIT_INDEX_FILE": str(index)})
+    return git(repo, "write-tree", env={"GIT_INDEX_FILE": str(index)}).strip()
+
+
+def _put_back(repo: Path, index: Path, tree: str) -> None:
+    """Put every tracked and untracked file back as `_snapshot` saw it and remove
+    the untracked files added since. Files git ignores are left alone."""
+    env = {"GIT_INDEX_FILE": str(index)}
+    try:
+        git(repo, "read-tree", tree, env=env)
+        git(repo, "checkout-index", "--all", "--force", env=env)
+        git(repo, "clean", "--force", "-d", "--quiet", env=env)
+        real = index.with_name("real-index")
+        if real.exists():
+            shutil.copyfile(real, repo / ".git" / "index")
+        git(repo, "add", "--all", env=env)
+        after = git(repo, "write-tree", env=env).strip()
+    except (RuntimeError, OSError) as error:
+        raise RestoreFailed(
+            f"the workspace could not be put back after the checks: {error}"
+        ) from error
+    if after != tree:
+        raise RestoreFailed(
+            "the workspace could not be put back after the checks: its files still "
+            f"differ from before them (see `git status` in {repo})"
+        )
 
 
 # --- Asking a Judge ------------------------------------------------------------
@@ -328,7 +410,7 @@ def ask_about_trial(
     base = base_commit(settings, folder)
     with tempfile.TemporaryDirectory(prefix="build-bench-judge-") as tmp:
         work = Path(tmp) / label
-        rebuilt = blind_copy(settings, folder, trial, work, base)
+        rebuilt = blind_copy(settings, folder, trial, work, base, _setup_log(streams))
         prompt = (
             f"{instructions}\n\n---\n\n# Trial {label}\n\n"
             f"Your working folder is a copy of the build; change it as you like. "
@@ -360,10 +442,18 @@ def where_things_are(settings: Settings) -> str:
     return f"{plan} {checks}"
 
 
-def blind_copy(settings: Settings, folder: Path, trial: Trial, work: Path, base: str) -> str:
+def _setup_log(streams: Path) -> Path:
+    """Where `copy_setup` output goes for a Judge whose own output is named after `streams`."""
+    return streams.with_name(streams.name + ".copy_setup.log")
+
+
+def blind_copy(
+    settings: Settings, folder: Path, trial: Trial, work: Path, base: str, setup_log: Path
+) -> str:
     """Put a copy of the Trial's build at `work` for an Agent Judge: every change
-    uncommitted on the base commit, and the plan as first written. Returns what to
-    tell the Judge when the copy had to be rebuilt, else nothing."""
+    uncommitted on the base commit, and the plan as first written, then run
+    `copy_setup` there, its output in `setup_log`. Returns what to tell the Judge
+    when the copy had to be rebuilt, else nothing."""
     rebuilt = ""
     if trial.workspace.is_dir():
         shutil.copytree(trial.workspace, work, symlinks=True)
@@ -379,6 +469,13 @@ def blind_copy(settings: Settings, folder: Path, trial: Trial, work: Path, base:
         # Every build is held to the plan as first written, not its own edits.
         shutil.rmtree(work / settings.plan_rel, ignore_errors=True)
         shutil.copytree(folder / "plan", work / settings.plan_rel, symlinks=True)
+    if settings.copy_setup:
+        setup_log.parent.mkdir(parents=True, exist_ok=True)
+        with setup_log.open("w") as out:
+            failure = set_up_copy(settings, trial, work, out)
+        if failure:
+            # A Judge in a copy that is not set up would review the setup, not the build.
+            raise JudgeFailed(failure)
     return rebuilt
 
 

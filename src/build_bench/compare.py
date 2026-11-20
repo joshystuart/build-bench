@@ -24,6 +24,7 @@ from .judge import (
     _ask_api,
     _attempt,
     _record,
+    _setup_log,
     _sha,
     _str,
     base_commit,
@@ -162,7 +163,8 @@ def _ask(
         work.mkdir()
         rebuilt = ""
         for n, trial in builds:
-            rebuilt = blind_copy(settings, folder, trial, work / f"build-{n}", base) or rebuilt
+            log = _setup_log(path.with_name(f"{path.stem}.build-{n}"))
+            rebuilt = blind_copy(settings, folder, trial, work / f"build-{n}", base, log) or rebuilt
         measured = "\n".join(f"# Build {n}\n\n{facts(trial)}" for n, trial in builds)
         prompt = (
             f"{instructions}\n\n---\n\n"

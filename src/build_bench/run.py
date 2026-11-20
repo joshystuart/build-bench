@@ -249,6 +249,18 @@ def checks_in(settings: Settings, cwd: Path) -> tuple[dict, str]:
     return result, output.decode(errors="replace")
 
 
+def run_steps(name: str, steps: list[str], cwd: Path, out, env: dict | None = None) -> str | None:
+    """Run shell `steps` in order in `cwd`, writing each and its output to `out`.
+    Returns why one failed, naming the setting `name`, or None when all passed."""
+    for step in steps:
+        out.write(f"$ {step}\n")
+        out.flush()
+        done = subprocess.run(step, shell=True, cwd=cwd, stdout=out, stderr=out, env=env)
+        if done.returncode != 0:
+            return f"{name}: `{step}` exited with code {done.returncode}"
+    return None
+
+
 #: How many lines of a failing base check's output the error shows.
 BASE_LOG_LINES = 20
 
@@ -275,14 +287,9 @@ def check_base(settings: Settings, folder: Path, say=print) -> None:
     try:
         make_workspace(settings, folder, repo)
         with log.open("w") as out:
-            for step in settings.pre_build:
-                out.write(f"$ {step}\n")
-                out.flush()
-                done = subprocess.run(step, shell=True, cwd=repo, stdout=out, stderr=out)
-                if done.returncode != 0:
-                    reason = f"pre_build: `{step}` exited with code {done.returncode}"
-                    result = {"ran": False, "passed": False, "reason": reason}
-                    break
+            failure = run_steps("pre_build", settings.pre_build, repo, out)
+        if failure:
+            result = {"ran": False, "passed": False, "reason": failure}
         if not result:
             result, output = checks_in(settings, repo)
             with log.open("a") as out:

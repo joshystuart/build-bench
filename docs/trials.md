@@ -103,7 +103,9 @@ Three things differ from Claude Code, and
   YAML file; put your own in a `presets/` folder beside the settings file
   (`presets/ruby.yaml` makes `languages: [ruby]` work).
 - **Checks:** whether `checks` passes, run in a throwaway copy of the
-  workspace, with its output in `checks.log`.
+  workspace (or in the workspace itself with `checks_in_place`; see
+  [settings.md](settings.md#where-the-checks-run)), with its output in
+  `checks.log`.
 
 Boxes a build ticks in the plan are not measured: they are the build's own
 claim, and a plan need not have any.

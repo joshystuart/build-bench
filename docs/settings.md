@@ -14,6 +14,8 @@ plan: .scratch/my-plan          # optional; may be ignored by git
 results: .bench/results         # optional; this is the default
 pre_build: [npm ci]             # optional; run in each Trial before the agent
 checks: npm run check           # optional; run by `judge` in a copy of each Trial
+checks_in_place: false          # optional; run the checks in each Trial's own workspace instead
+copy_setup: [mise trust]        # optional; run in every throwaway copy of a Trial before it is used
 check_base: true                # optional; `run` first makes sure `checks` passes on `base` (the default)
 concurrency: 2                  # Trials (and Judges) at once
 auth: api-key                   # or: subscription; Claude Code's login, needed only if it is used
@@ -59,6 +61,53 @@ merge_judge: diff-only          # optional; the Judge that merges Findings (defa
 
 A settings file with missing or wrong fields is rejected before anything
 runs, with every problem named.
+
+## Where the checks run
+
+By default `judge` runs `checks` in a throwaway copy of each Trial's
+workspace, so the workspace itself never changes. A project whose setup
+depends on the folder it is in can fail there for reasons that have nothing to
+do with the build: Docker Compose names its project after the folder, so the
+copy starts a second database on the port the Trial's own already holds, and
+mise only trusts the folder it was told to trust.
+
+Two settings deal with this:
+
+- `checks_in_place: true` runs the checks in the Trial's own workspace. Before
+  they start, build-bench saves every file git tracks and every untracked file
+  git does not ignore. Afterwards it puts those back and removes untracked
+  files the checks added. Files git ignores (build output, caches) stay as the
+  checks left them. If the workspace cannot be put back, `judge` prints why,
+  saves the reason in the Trial's `measurements.json`, does not judge that
+  Trial, and exits with code 1. Delete that `measurements.json` to measure it
+  again once the workspace is fixed.
+- `copy_setup` is a list of commands run in order in every throwaway copy
+  before it is used: the checks copy, and each Agent Judge's copy for the
+  find, check and compare steps. They do not run in the Trial's own workspace
+  or in the merge step's empty folder. Each is told the path of the Trial's
+  own workspace in `BUILD_BENCH_WORKSPACE`. If one fails in the checks copy,
+  the checks are recorded as not run, with the reason. If one fails in a
+  Judge's copy, that judging step fails with the reason and no agent starts;
+  the next `judge` tries it again. Its output is in `checks.log`, or beside
+  the Judge's own output as `<judge>.copy_setup.log`.
+
+```yaml
+# mise refuses to run in a folder it has not been told to trust.
+copy_setup:
+  - mise trust
+
+# Or: the checks reuse the database the Trial's own workspace started.
+checks_in_place: true
+```
+
+```yaml
+# Give each copy its own Compose project, named after the Trial's workspace.
+copy_setup:
+  - echo "COMPOSE_PROJECT_NAME=$(basename "$(dirname "$BUILD_BENCH_WORKSPACE")")-copy" > .env
+```
+
+Neither setting undoes what the checks change outside the folder: rows written
+to a database the Trial started, containers, files elsewhere on the machine.
 
 ## Checks on the base commit
 
