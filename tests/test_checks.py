@@ -278,8 +278,8 @@ def test_the_report_shows_each_checks_result(experiment, fake, cli):
     data = json.loads((folder / "report.json").read_text())
     [v] = data["variants"]
     assert v["quality"]["by_check"] == {
-        "lint": {"passed": 2, "ran": 2, "trials": 2},
-        "ui": {"passed": 1, "ran": 2, "trials": 2},
+        "lint": {"passed": 2, "ran": 2, "trials": 2, "fails_on_base": False},
+        "ui": {"passed": 1, "ran": 2, "trials": 2, "fails_on_base": False},
     }
     assert {t["trial"]: t["checks"] for t in data["trials"]} == {
         "v-1": {"lint": "passed", "ui": "failed"},
@@ -293,3 +293,107 @@ def test_the_report_shows_each_checks_result(experiment, fake, cli):
     page = (folder / "report.html").read_text()
     assert "lint 2/2 · ui 1/2" in page
     assert "<td>failed</td>" in page
+
+
+# --- Checks on the base commit ---------------------------------------------------------
+
+#: `setup` fails on the base commit and in every Trial; `calc` passes on the base
+#: and fails once a build has changed the code.
+BASE_AND_REGRESSION = [
+    {"name": "setup", "command": "echo no database; exit 3"},
+    {"name": "calc", "command": "test ! -e fake_committed.txt"},
+]
+
+
+def test_check_base_takes_true_false_or_mark(experiment, cli):
+    settings = experiment(checks="true", check_base="sometimes")
+    code, _, err = cli("run", settings)
+    assert code == 2
+    assert "check_base" in err
+
+
+def test_mark_runs_the_checks_on_the_base_and_builds_anyway(experiment, fake, cli):
+    settings = experiment(checks=BASE_AND_REGRESSION, check_base="mark")
+    code, out, err = cli("run", settings)
+    assert code == 0, out + err
+    assert "The check `setup` fails on the base commit; the report marks it." in out
+    base = json.loads((results_folder(settings) / "base-checks.json").read_text())
+    assert base["passed"] is False
+    assert [(c["name"], c["passed"]) for c in base["checks"]] == [("setup", False), ("calc", True)]
+    assert len(fake.calls()) == 1
+
+
+def test_true_stops_when_any_one_check_fails_on_the_base_naming_it(experiment, fake, cli):
+    settings = experiment(checks=BASE_AND_REGRESSION)
+    code, _, err = cli("run", settings)
+    assert code == 2
+    assert "the check `setup` (`echo no database; exit 3`) fails on the base commit" in err
+    assert "`calc`" not in err.split("Nothing was built")[0]
+    assert "set `check_base: mark` to build anyway" in err
+    assert fake.calls(judge=None) == []
+
+
+def test_the_base_result_is_reused_only_while_its_settings_are_unchanged(
+    experiment, fake, cli, tmp_path
+):
+    runs = tmp_path / "base-runs"
+    counting = [{"name": "count", "command": f"echo ran >> {runs}; test ! -e fake_committed.txt"}]
+    settings = experiment(
+        checks=counting,
+        check_base="mark",
+        variants=[{"name": "v", "prompt": "prompts/build.md", "model": "m", "repeats": 2}],
+    )
+    fake.set(per_cwd={"/v-2/": "crash"})
+
+    def resume() -> int:
+        assert cli("run", settings, "--resume")[0] == 1
+        return len(runs.read_text().splitlines())
+
+    assert cli("run", settings)[0] == 1
+    assert resume() == 1
+    original = settings.read_text()
+    for changed in (
+        original + "env: {PINNED: pinned}\n",
+        original + "runtime_check: echo fine\n",
+        original.replace("test ! -e", "test ! -f"),
+    ):
+        before = len(runs.read_text().splitlines())
+        settings.write_text(changed)
+        assert resume() == before + 1
+
+
+def test_the_report_marks_checks_that_fail_on_the_base(experiment, fake, cli):
+    settings = experiment(
+        checks=BASE_AND_REGRESSION,
+        check_base="mark",
+        variants=[{"name": "v", "prompt": "prompts/build.md", "model": "m", "repeats": 2}],
+    )
+    assert cli("run", settings)[0] == 0
+    assert cli("judge", settings)[0] == 0
+    assert cli("report", settings)[0] == 0
+    folder = results_folder(settings)
+    data = json.loads((folder / "report.json").read_text())
+    [v] = data["variants"]
+    assert v["quality"]["by_check"]["setup"] == {
+        "passed": 0,
+        "ran": 2,
+        "trials": 2,
+        "fails_on_base": True,
+    }
+    assert v["quality"]["by_check"]["calc"]["fails_on_base"] is False
+    # `setup` is left out of the pass count: the Trials fail only `calc`.
+    assert v["quality"]["checks"] == {"passed": 0, "ran": 2, "trials": 2}
+    assert data["trials"][0]["checks"] == {"setup": "fails on base", "calc": "failed"}
+    assert data["flags"]["regressions"] == [{"check": "calc", "trials": ["v-1", "v-2"]}]
+
+    md = (folder / "report.md").read_text()
+    assert "| v | 2/2 | setup fails on base · calc 0/2 |" in md
+    assert "| v-1 | fails on base | failed |" in md
+    regression = (
+        "- **Regression:** the check `calc` passed on the base commit and failed in v-1, v-2."
+    )
+    assert md.index(regression) < md.index("## Build")
+    page = (folder / "report.html").read_text()
+    assert "setup fails on base · calc 0/2" in page
+    assert "<td>fails on base</td>" in page
+    assert "<strong>Regression:</strong> the check `calc` passed on the base commit" in page

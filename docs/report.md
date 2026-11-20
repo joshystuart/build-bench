@@ -40,7 +40,11 @@ are listed with their reasons. The report flags Trials that ran alongside
 others (time comparisons between them are weaker), an Experiment whose Trials
 used different agent versions, Judges that all share the builders' model
 family, checks that no Trial passed (with whether `run` saw them pass on the
-base commit), and the login type. `report.json` holds every number, per Trial and
+base commit), regressions (a Check that passed on the base commit and failed
+in a Trial; listed first), and the login type. With `check_base: mark`, a Check
+that failed on the base commit reads "fails on base", in the Quality and
+Checks tables, and is left out of the pass counts, since no build could pass
+it. `report.json` holds every number, per Trial and
 per Variant. `report.html` adds a timeline per Trial on one time scale, works
 offline, and has a "Show as table" alternative for every chart.
 

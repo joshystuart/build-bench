@@ -783,7 +783,9 @@ def test_checks_saved_before_named_checks_report_as_one_check(saved, cli, no_mod
     cli("report", settings)
     data = json.loads((folder / "report.json").read_text())
     v1 = data["variants"][0]
-    assert v1["quality"]["by_check"] == {"checks": {"passed": 1, "ran": 2, "trials": 3}}
+    assert v1["quality"]["by_check"] == {
+        "checks": {"passed": 1, "ran": 2, "trials": 3, "fails_on_base": False}
+    }
     assert {t["trial"]: t["checks"] for t in data["trials"]}["v1-2"] == {"checks": "failed"}
     md = (folder / "report.md").read_text()
     assert "## Checks" not in md

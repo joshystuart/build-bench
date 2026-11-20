@@ -108,8 +108,9 @@ class Settings(_Strict):
     #: A shell command that fails when the runtime is wrong; run before each build
     #: and before the checks.
     runtime_check: str | None = None
-    #: Whether `run` first makes sure `checks` passes on the base commit.
-    check_base: bool = True
+    #: Whether `run` first runs the checks on the base commit: `true` stops the run
+    #: when any fails there, `mark` builds anyway and has the report mark it.
+    check_base: bool | Literal["mark"] = True
     concurrency: int = Field(default=1, ge=1)
     #: Claude Code's login. Needed only when a Variant or Judge is Claude Code;
     #: the Copilot CLI finds its own login.

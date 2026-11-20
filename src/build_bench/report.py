@@ -111,7 +111,12 @@ def _judging(saved: dict) -> dict:
     return {key: saved.get(key) for key in ("status", "reason", "cost_usd", "seconds")}
 
 
-def trial_row(trial, judges: list[str], defects: list[dict] | None) -> dict[str, Any]:
+def trial_row(
+    trial,
+    judges: list[str],
+    defects: list[dict] | None,
+    fails_on_base: frozenset[str] | set[str] = frozenset(),
+) -> dict[str, Any]:
     status = trial.status or {}
     m = read_json(trial.folder / "measurements.json") or {}
     timings = read_json(trial.folder / "timings.json") or {}
@@ -138,8 +143,12 @@ def trial_row(trial, judges: list[str], defects: list[dict] | None) -> dict[str,
         "prod_removed": line_counts.get("prod_removed"),
         "test_added": line_counts.get("test_added"),
         "test_removed": line_counts.get("test_removed"),
-        "checks_passed": bool(checks.get("passed")) if checks.get("ran") else None,
-        "checks": _each_check(checks),
+        "checks_passed": None,
+        "checks": {
+            # A Check that also fails on the base commit says nothing about this build.
+            name: "fails on base" if name in fails_on_base and result != "passed" else result
+            for name, result in _each_check(checks).items()
+        },
         "final_message": _text(trial.folder / "summary.md"),
         "changed_nothing": _changed_nothing(trial.folder),
         "findings": {},
@@ -147,6 +156,10 @@ def trial_row(trial, judges: list[str], defects: list[dict] | None) -> dict[str,
         "defect_checks": {},
         "defects": {},
     }
+    # The checks pass when every Check that passed on the base commit passes here.
+    counted = [r for name, r in row["checks"].items() if name not in fails_on_base]
+    if counted:
+        row["checks_passed"] = all(r == "passed" for r in counted)
     for key, _, decimals in BUILD + OUTPUT:
         row[key] = _round(row[key], decimals)
     votes: dict[str, list[str]] = {d["id"]: [] for d in defects or []}
@@ -355,7 +368,10 @@ def build_report(settings: Settings, folder: Path) -> dict:
     merged = read_json(folder / "defects.json")
     trials = saved_trials(folder)
     defects = _defects(merged, trials, judges) if merged else None
-    rows = [trial_row(t, judges, defects) for t in trials]
+    # Each Check's result on the base commit, when `run` ran them there.
+    on_base = _each_check(read_json(folder / "base-checks.json") or {})
+    fails_on_base = {name for name, result in on_base.items() if result != "passed"}
+    rows = [trial_row(t, judges, defects, fails_on_base) for t in trials]
 
     order = [v.name for v in settings.variants]
     order += sorted({r["variant"] for r in rows} - set(order))
@@ -386,6 +402,7 @@ def build_report(settings: Settings, folder: Path) -> dict:
                             "passed": sum(1 for r in mine if r["checks"].get(name) == "passed"),
                             "ran": sum(1 for r in mine if name in r["checks"]),
                             "trials": len(mine),
+                            "fails_on_base": name in fails_on_base,
                         }
                         for name in check_names
                         if any(name in r["checks"] for r in rows)
@@ -487,7 +504,19 @@ def build_report(settings: Settings, folder: Path) -> dict:
         for kind in AGENT_NAMES
     }
     ran_checks = [r for r in rows if r["checks_passed"] is not None]
-    base_checks = read_json(folder / "base-checks.json") or {}
+    regressions = [
+        {"check": name, "trials": broke}
+        for name, result in on_base.items()
+        if result == "passed"
+        for broke in [
+            [
+                r["trial"]
+                for r in rows
+                if r["status"] == "finished" and r["checks"].get(name) in ("failed", "timed out")
+            ]
+        ]
+        if broke
+    ]
     return {
         "experiment": experiment.get("name", settings.name),
         "results_folder": str(folder),
@@ -511,8 +540,10 @@ def build_report(settings: Settings, folder: Path) -> dict:
             # Checks every Trial fails cannot tell one Variant from another.
             "no_trial_passed_the_checks": bool(ran_checks)
             and not any(r["checks_passed"] for r in ran_checks),
-            # Whether `run` saw the checks pass on the base commit, before any build.
-            "checks_passed_on_the_base": bool(base_checks.get("passed")),
+            # Whether `run` saw the checks counted above pass on the base commit.
+            "checks_passed_on_the_base": "passed" in on_base.values(),
+            # Checks that passed on the base commit and failed in a Trial: a build broke them.
+            "regressions": regressions,
         },
         "check_names": [n for n in check_names if any(n in r["checks"] for r in rows)],
         "variants": variants,
@@ -576,9 +607,15 @@ def _checks_cell(quality: dict) -> str:
     by_check = quality["by_check"]
     if len(by_check) > 1:
         return " · ".join(
-            f"{name} {c['passed']}/{c['trials']}" if c["ran"] else f"{name} –"
+            f"{name} fails on base"
+            if c["fails_on_base"]
+            else f"{name} {c['passed']}/{c['trials']}"
+            if c["ran"]
+            else f"{name} –"
             for name, c in by_check.items()
         )
+    if any(c["fails_on_base"] for c in by_check.values()):
+        return "fails on base"
     checks = quality["checks"]
     return f"{checks['passed']}/{checks['trials']}" if checks["ran"] else "–"
 
@@ -754,6 +791,12 @@ def failed_judging_lines(data: dict) -> list[str]:
 
 def flag_lines(data: dict) -> list[str]:
     out = []
+    for r in data["flags"]["regressions"]:
+        what = "the checks" if r["check"] == "checks" else f"the check `{r['check']}`"
+        out.append(
+            f"- **Regression:** {what} passed on the base commit and failed in "
+            f"{', '.join(r['trials'])}."
+        )
     if data["flags"]["subscription_login"]:
         out.append(
             "- Login: **subscription**. Subscription rate limits can slow Trials down, "

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
 import shutil
@@ -313,6 +315,20 @@ def runtime_problem(settings: Settings, cwd: Path, out) -> str | None:
     return reason + (f": {' | '.join(tail)}" if tail else "")
 
 
+def settings_key(settings: Settings, fields: list[str]) -> str:
+    """A short hash of some of the settings, saved beside a result so it is
+    reused only while they stay the same."""
+    chosen = settings.model_dump(mode="json", include=set(fields))
+    chosen["checks"] = [c.model_dump() for c in settings.named_checks]
+    text = json.dumps({k: chosen.get(k) for k in sorted([*fields, "checks"])})
+    return hashlib.sha256(text.encode()).hexdigest()[:12]
+
+
+def base_checks_key(settings: Settings) -> str:
+    """What the checks on the base commit depend on, besides the commit itself."""
+    return settings_key(settings, ["env", "runtime_check"])
+
+
 #: How many lines of a failing base check's output the error shows.
 BASE_LOG_LINES = 20
 
@@ -324,10 +340,11 @@ def check_base(settings: Settings, folder: Path, say=print) -> None:
     The result is saved in `base-checks.json`, so a resumed run does not repeat a
     check that passed. Raises RunError when the base fails.
     """
-    if not settings.checks or not settings.check_base:
+    if not settings.checks or settings.check_base is False:
         return
+    key = base_checks_key(settings)
     saved = read_json(folder / "base-checks.json") or {}
-    if saved.get("passed") and saved.get("command") == settings.checks_command:
+    if saved.get("settings_key") == key and (saved.get("passed") or settings.check_base == "mark"):
         return
     say(f"Running the checks (`{settings.checks_command}`) on the base commit…")
     log = folder / "base-checks.log"
@@ -354,12 +371,31 @@ def check_base(settings: Settings, folder: Path, say=print) -> None:
     finally:
         shutil.rmtree(home, ignore_errors=True)
     _redact_file(log, secrets(settings))
-    write_json(folder / "base-checks.json", {**result, "base_sha": settings.base_sha})
+    write_json(
+        folder / "base-checks.json", {**result, "base_sha": settings.base_sha, "settings_key": key}
+    )
     if result["passed"]:
         say("The checks pass on the base commit.")
         return
+    failing = [c for c in result.get("checks") or [] if not c["passed"]]
+    if settings.check_base == "mark":
+        if not result["ran"]:
+            say(f"The checks could not run on the base commit: {result['reason']}.")
+        elif len(failing) == 1:
+            say(f"The check `{failing[0]['name']}` fails on the base commit; the report marks it.")
+        else:
+            names = ", ".join(f"`{c['name']}`" for c in failing)
+            say(f"The checks {names} fail on the base commit; the report marks them.")
+        return
     if not result["ran"]:
         why = f"{result['reason']} on the base commit"
+    elif not isinstance(settings.checks, str):
+        named = [f"`{c['name']}` (`{c['command']}`)" for c in failing]
+        why = (
+            f"the check {named[0]} fails"
+            if len(named) == 1
+            else f"the checks {', '.join(named)} fail"
+        ) + " on the base commit"
     elif result["timed_out"]:
         why = f"the checks (`{settings.checks_command}`) timed out on the base commit"
     else:
@@ -372,7 +408,8 @@ def check_base(settings: Settings, folder: Path, say=print) -> None:
         f"{why}, so no Trial could pass them. Nothing was built.\n"
         + "".join(f"  {line}\n" for line in tail)
         + f"The whole output is in {log}\n"
-        "Fix the checks on this machine, or set `check_base: false` to build anyway."
+        "Fix the checks on this machine, set `check_base: mark` to build anyway and have "
+        "the report mark them, or set `check_base: false` to build anyway."
     )
 
 

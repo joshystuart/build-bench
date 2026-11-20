@@ -19,7 +19,7 @@ runtime_check: node --version | grep -q '^v24\.'   # optional; must pass before 
 checks: npm run check           # optional; run by `judge` in a copy of each Trial; or a list of named Checks
 checks_in_place: false          # optional; run the checks in each Trial's own workspace instead
 copy_setup: [mise trust]        # optional; run in every throwaway copy of a Trial before it is used
-check_base: true                # optional; `run` first makes sure `checks` passes on `base` (the default)
+check_base: true                # optional; true (the default), mark or false: see below
 concurrency: 2                  # Trials (and Judges) at once
 auth: api-key                   # or: subscription; Claude Code's login, needed only if it is used
 auth_env: MY_ANTHROPIC_KEY      # optional; the variable holding the login
@@ -177,14 +177,25 @@ to a database the Trial started, containers, files elsewhere on the machine.
 Checks that fail on the base commit fail in every Trial, whatever it builds,
 so they cannot tell one Variant from another. When `checks` is set, `run`
 therefore starts by running `pre_build` and then `checks` in a clone of the
-base commit. If either fails, `run` stops before any Trial is built, shows the
-end of the output and exits with code 2. The whole output is in
-`base-checks.log` in the results folder. A check that passed is not repeated
-by `run --resume`.
+base commit (after `runtime_check`), and saves a result per Check in
+`base-checks.json`. What happens next depends on `check_base`:
 
-Set `check_base: false` when the checks are meant to fail on the base commit,
-for example when the base already holds failing tests for the build to make
-pass.
+- `true` (the default): if any Check fails, `run` stops before any Trial is
+  built, names the Checks that failed, shows the end of the output and exits
+  with code 2.
+- `mark`: `run` says which Checks failed and builds anyway. In the report, a
+  Check that failed on the base reads "fails on base" and is left out of every
+  Variant's pass count, and a Check that passed on the base but failed in a
+  Trial is flagged as a regression at the top of the report. Use it when one
+  Check is known to fail for reasons the builds cannot fix.
+- `false`: the checks are not run on the base commit. Use it when they are
+  meant to fail there, for example when the base already holds failing tests
+  for the build to make pass.
+
+The whole output is in `base-checks.log` in the results folder. `run --resume`
+reuses the saved result (one that passed, or with `mark` any) while the
+Checks, `env` and `runtime_check` are unchanged, and runs the checks again
+when one of them has changed.
 
 ## Logins and keys
 
