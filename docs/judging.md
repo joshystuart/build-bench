@@ -205,6 +205,29 @@ Verdicts (a Judge's own `prompt` replaces it), `merge.md`, `check.md` and
 `compare.md`. Changing `judge_guidance` counts as a change to every one of
 them.
 
+## What runs again
+
+`judge` keeps what it saved and redoes only what has gone out of date:
+
+- **The checks** run again when a Check, `env`, `copy_setup`, `runtime_check`
+  or `checks_in_place` has changed since they last ran. The transcript and
+  line measurements are kept, and no Judge is asked again for that alone.
+  Measurements saved before build-bench recorded these settings are kept while
+  the settings are at their defaults and the checks command is the same.
+- **Verdicts** run again when the Judge's find prompt or `judge_guidance` has
+  changed, and **Defect checks** and **Comparisons** when their prompt or the
+  guidance has. A failed step always runs again.
+- **The merge** places only Findings not yet in a Defect; existing Defects keep
+  their ids.
+- Nothing else is part of any key: a results folder's plan is the copy saved
+  when it started, and cannot change.
+
+`judge --fresh` judges a results folder again from nothing: it removes the
+measurements, the checks' logs, the Verdicts, the Defects, the Defect checks
+and the Comparisons, then runs every step, so the Defect ids start again from
+`D1`. It is how to try new settings without building again. `all` does not
+take `--fresh`, because it always starts a new results folder.
+
 ## Why LiteLLM is pinned
 
 LiteLLM versions 1.82.7 and 1.82.8 on PyPI were malicious: they were

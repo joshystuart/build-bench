@@ -39,6 +39,7 @@ from .run import (
     make_workspace,
     run_steps,
     runtime_problem,
+    settings_key,
 )
 from .settings import Judge, Settings, path_rules
 
@@ -59,10 +60,24 @@ FOLDED = (
 CHECKS_LIMIT = 30_000
 
 
-def judge(settings: Settings, folder: Path, say=print, agent: Agents | None = None) -> bool:
-    """Measure, then find, merge and check. Returns False if any step failed."""
+def judge(
+    settings: Settings,
+    folder: Path,
+    say=print,
+    agent: Agents | None = None,
+    *,
+    fresh: bool = False,
+) -> bool:
+    """Measure, then find, merge and check. Returns False if any step failed.
+    With `fresh`, everything judging saved before is removed first."""
     agent = agent or Agents(settings.env)
     trials = saved_trials(folder)
+    if fresh:
+        say(
+            "Judging again from nothing (--fresh): measurements, Verdicts, Defects, "
+            "Defect checks and Comparisons."
+        )
+        forget_judging(folder, trials)
     measured = [measure_trial(settings, folder, trial, say) for trial in trials]
     ready = [
         t
@@ -79,7 +94,37 @@ def judge(settings: Settings, folder: Path, say=print, agent: Agents | None = No
     return found and merged and checked and compared and not unmeasured
 
 
+def forget_judging(folder: Path, trials: list[Trial]) -> None:
+    """Remove what `judge` saved in a results folder, so every step runs again
+    and the Defect ids start from the first."""
+    for trial in trials:
+        for name in ("measurements.json", "checks.log"):
+            (trial.folder / name).unlink(missing_ok=True)
+        for name in ("checks", "verdicts", "defect-checks"):
+            shutil.rmtree(trial.folder / name, ignore_errors=True)
+    for path in folder.glob("defects.*"):
+        path.unlink()
+    shutil.rmtree(folder / "comparisons", ignore_errors=True)
+
+
 # --- Automatic measurements -------------------------------------------------
+
+#: The settings besides the Checks that the checks' result depends on.
+CHECKS_SETTINGS = ["env", "copy_setup", "runtime_check", "checks_in_place"]
+
+
+def checks_stale(settings: Settings, saved: dict) -> bool:
+    """Whether the checks saved in a measurement ran under other settings than
+    these. A measurement from before this was recorded is kept while those
+    settings are at their defaults and the checks command is the same."""
+    key = saved.get("checks_key")
+    if key is not None:
+        return key != settings_key(settings, CHECKS_SETTINGS)
+    command = (saved.get("checks") or {}).get("command")
+    changed = command is not None and command != settings.checks_command
+    return changed or any(
+        (settings.env, settings.copy_setup, settings.runtime_check, settings.checks_in_place)
+    )
 
 
 def measure_trial(settings: Settings, folder: Path, trial: Trial, say=print) -> dict | None:
@@ -91,6 +136,14 @@ def measure_trial(settings: Settings, folder: Path, trial: Trial, say=print) -> 
         saved = read_json(target)
         if saved.get("error"):
             say(f"[measure failed] {trial.id}: {saved['error']}")
+        elif checks_stale(settings, saved) and trial.workspace.is_dir():
+            say(f"[checks again] {trial.id}: the settings the checks ran under have changed")
+            (trial.folder / "checks.log").unlink(missing_ok=True)
+            shutil.rmtree(trial.folder / "checks", ignore_errors=True)
+            _measure_checks(settings, trial, saved)
+            write_json(target, saved)
+            if saved.get("error"):
+                say(f"[measure failed] {trial.id}: {saved['error']}")
         return saved
 
     prices = {**transcript.default_prices(), **settings.prices}
@@ -103,18 +156,24 @@ def measure_trial(settings: Settings, folder: Path, trial: Trial, say=print) -> 
     test_paths, ignore_paths, rust_inline = path_rules(settings)
     diff = _text(trial.folder / "diff-full.patch") or _text(trial.folder / "diff.patch")
     measured["lines"] = lines.count_lines(diff, test_paths, ignore_paths, rust_inline)
-    try:
-        measured["checks"] = run_checks(settings, trial)
-    except RestoreFailed as error:
-        # The workspace no longer holds what the build left, so judging it would
-        # judge the checks. It stays failed until it is measured from nothing.
-        measured["error"] = str(error)
+    _measure_checks(settings, trial, measured)
     write_json(target, measured)
     if measured.get("error"):
         say(f"[measure failed] {trial.id}: {measured['error']}")
     else:
         say(f"[measured] {trial.id}")
     return measured
+
+
+def _measure_checks(settings: Settings, trial: Trial, measured: dict) -> None:
+    """Run the checks into `measured`, with the settings they ran under."""
+    try:
+        measured["checks"] = run_checks(settings, trial)
+    except RestoreFailed as error:
+        # The workspace no longer holds what the build left, so judging it would
+        # judge the checks. It stays failed until it is measured from nothing.
+        measured["error"] = str(error)
+    measured["checks_key"] = settings_key(settings, CHECKS_SETTINGS)
 
 
 def _text(path: Path) -> str:
