@@ -177,7 +177,7 @@ def run(
     With `live`, a progress display is redrawn below the printed lines while
     the Trials run; it needs a terminal.
     """
-    agent = agent or Agents()
+    agent = agent or Agents(settings.env)
     versions = preflight(settings, agent)
     say(WARNING)
     start_folder(settings, folder, versions)
@@ -231,6 +231,7 @@ def checks_in(settings: Settings, cwd: Path) -> tuple[dict, str]:
             settings.checks,
             shell=True,
             cwd=cwd,
+            env=settings.environment(),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             timeout=timeout * 60 if timeout else None,
@@ -261,6 +262,30 @@ def run_steps(name: str, steps: list[str], cwd: Path, out, env: dict | None = No
     return None
 
 
+def runtime_problem(settings: Settings, cwd: Path, out) -> str | None:
+    """Run `runtime_check` in `cwd`, writing it and its output to `out`. Returns why
+    it failed, ending with the end of what it wrote to stderr, or None."""
+    if not settings.runtime_check:
+        return None
+    out.write(f"$ {settings.runtime_check}\n")
+    out.flush()
+    done = subprocess.run(
+        settings.runtime_check,
+        shell=True,
+        cwd=cwd,
+        env=settings.environment(),
+        stdout=out,
+        stderr=subprocess.PIPE,
+    )
+    said = done.stderr.decode(errors="replace")
+    out.write(said)
+    if done.returncode == 0:
+        return None
+    tail = [line.strip() for line in said.strip().splitlines()[-3:] if line.strip()]
+    reason = f"runtime_check: `{settings.runtime_check}` exited with code {done.returncode}"
+    return reason + (f": {' | '.join(tail)}" if tail else "")
+
+
 #: How many lines of a failing base check's output the error shows.
 BASE_LOG_LINES = 20
 
@@ -287,7 +312,9 @@ def check_base(settings: Settings, folder: Path, say=print) -> None:
     try:
         make_workspace(settings, folder, repo)
         with log.open("w") as out:
-            failure = run_steps("pre_build", settings.pre_build, repo, out)
+            failure = runtime_problem(settings, repo, out) or run_steps(
+                "pre_build", settings.pre_build, repo, out, env=settings.environment()
+            )
         if failure:
             result = {"ran": False, "passed": False, "reason": failure}
         if not result:
@@ -383,13 +410,19 @@ def _build(settings: Settings, folder: Path, trial: Trial, agent: Headless) -> d
 
     pre_build_seconds = 0.0
     with (trial.folder / "pre_build.log").open("w") as log:
+        # A wrong runtime stops the Trial before an agent is paid for.
+        failure = runtime_problem(settings, repo, log)
+        if failure:
+            return {"status": "failed", "reason": failure}
         for step in settings.pre_build:
             if agent.stopped:
                 return {"status": "failed", "reason": STOPPED}
             log.write(f"$ {step}\n")
             log.flush()
             started = time.time()
-            done = subprocess.run(step, shell=True, cwd=repo, stdout=log, stderr=log)
+            done = subprocess.run(
+                step, shell=True, cwd=repo, stdout=log, stderr=log, env=settings.environment()
+            )
             pre_build_seconds += time.time() - started
             if done.returncode != 0:
                 write_json(trial.folder / "timings.json", {"pre_build_seconds": pre_build_seconds})

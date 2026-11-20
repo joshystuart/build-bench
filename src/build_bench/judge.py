@@ -31,7 +31,7 @@ from typing import Any
 from . import lines, transcript
 from .agent import STOPPED, AgentRequest, Agents
 from .results import Trial, read_json, saved_trials, write_json
-from .run import checks_in, git, in_parallel, make_workspace, run_steps
+from .run import checks_in, git, in_parallel, make_workspace, run_steps, runtime_problem
 from .settings import Judge, Settings, path_rules
 
 #: A Finding's severity, worst first.
@@ -51,7 +51,7 @@ CHECKS_LIMIT = 30_000
 
 def judge(settings: Settings, folder: Path, say=print, agent: Agents | None = None) -> bool:
     """Measure, then find, merge and check. Returns False if any step failed."""
-    agent = agent or Agents()
+    agent = agent or Agents(settings.env)
     trials = saved_trials(folder)
     measured = [measure_trial(settings, folder, trial, say) for trial in trials]
     ready = [
@@ -125,16 +125,22 @@ def run_checks(settings: Settings, trial: Trial) -> dict:
                 before = _snapshot(trial.workspace, index)
             except (RuntimeError, OSError) as error:
                 return {"ran": False, "reason": f"the workspace could not be saved: {error}"}
-            result, output = checks_in(settings, trial.workspace)
-            (trial.folder / "checks.log").write_text(output)
+            with (trial.folder / "checks.log").open("w") as out:
+                failure = runtime_problem(settings, trial.workspace, out)
+            if not failure:
+                result, output = checks_in(settings, trial.workspace)
+                with (trial.folder / "checks.log").open("a") as out:
+                    out.write(output)
             _put_back(trial.workspace, index, before)
-        return result
+        return {"ran": False, "reason": failure} if failure else result
     log = trial.folder / "checks.log"
     with tempfile.TemporaryDirectory(prefix="build-bench-checks-") as tmp:
         copy = Path(tmp) / "trial"
         shutil.copytree(trial.workspace, copy, symlinks=True)
         with log.open("w") as out:
-            failure = set_up_copy(settings, trial, copy, out)
+            failure = set_up_copy(settings, trial, copy, out) or runtime_problem(
+                settings, copy, out
+            )
         if failure:
             return {"ran": False, "reason": failure}
         result, output = checks_in(settings, copy)
@@ -149,7 +155,7 @@ WORKSPACE_VARIABLE = "BUILD_BENCH_WORKSPACE"
 
 def set_up_copy(settings: Settings, trial: Trial, copy: Path, out) -> str | None:
     """Run `copy_setup` in a throwaway copy of `trial`. Returns why it failed, if it did."""
-    env = {**os.environ, WORKSPACE_VARIABLE: str(trial.workspace)}
+    env = {**settings.environment(), WORKSPACE_VARIABLE: str(trial.workspace)}
     return run_steps("copy_setup", settings.copy_setup, copy, out, env=env)
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from importlib import resources
 from pathlib import Path
@@ -93,6 +94,12 @@ class Settings(_Strict):
     checks_in_place: bool = False
     #: Commands run in every throwaway copy of a Trial before it is used.
     copy_setup: list[str] = []
+    #: Variables for every process the Experiment's commands start; `$NAME` and
+    #: `${NAME}` expand from build-bench's own environment when the settings load.
+    env: dict[str, str] = {}
+    #: A shell command that fails when the runtime is wrong; run before each build
+    #: and before the checks.
+    runtime_check: str | None = None
     #: Whether `run` first makes sure `checks` passes on the base commit.
     check_base: bool = True
     concurrency: int = Field(default=1, ge=1)
@@ -150,6 +157,10 @@ class Settings(_Strict):
             return None
         assert self.auth is not None
         return DEFAULT_AUTH_ENV[self.auth], os.environ[self.auth_variable]
+
+    def environment(self) -> dict[str, str]:
+        """The environment for the commands and agents the Experiment starts."""
+        return {**os.environ, **self.env}
 
     def judge_limits(self, judge: Judge) -> Limits:
         """A Judge's own limits win; anything it leaves out comes from the Experiment."""
@@ -212,6 +223,7 @@ def _check(s: Settings) -> list[str]:
 
     s.repo = (folder / s.repo).resolve()
     s.results = (folder / s.results).resolve()
+    problems += _expand_env(s)
     if not (s.repo / ".git").exists():
         problems.append(f"repo: not a git repository: {s.repo}")
     else:
@@ -275,6 +287,22 @@ def _check(s: Settings) -> list[str]:
     for i, language in enumerate(s.languages):
         if find_preset(s, language) is None:
             problems.append(f"languages.{i}: no preset named {language!r}")
+    return problems
+
+
+_VARIABLE = re.compile(r"\$(?:\{(\w+)\}|(\w+))")
+
+
+def _expand_env(s: Settings) -> list[str]:
+    """Expand `$NAME` and `${NAME}` in each `env` value; an unset name is a problem,
+    so a typo never becomes an empty entry in `PATH`."""
+    problems = []
+    for name, value in s.env.items():
+        unset = [a or b for a, b in _VARIABLE.findall(value) if (a or b) not in os.environ]
+        for missing in dict.fromkeys(unset):
+            problems.append(f"env.{name}: ${missing} is not set")
+        if not unset:
+            s.env[name] = _VARIABLE.sub(lambda m: os.environ[m.group(1) or m.group(2)], value)
     return problems
 
 

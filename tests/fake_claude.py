@@ -79,6 +79,8 @@ def main() -> int:
                 "CLAUDECODE",
                 "CLAUDE_CODE_SESSION_ID",
                 "CLAUDE_EFFORT",
+                "BENCH_PROBE",
+                "PATH",
             )
         },
         "config_files": sorted(p.name for p in config.iterdir()) if config.is_dir() else None,

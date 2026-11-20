@@ -50,7 +50,13 @@ def main() -> int:
         "mode": mode,
         "env": {
             k: os.environ.get(k)
-            for k in ("COPILOT_HOME", "COPILOT_MODEL", "COPILOT_GITHUB_TOKEN", "ANTHROPIC_API_KEY")
+            for k in (
+                "COPILOT_HOME",
+                "COPILOT_MODEL",
+                "COPILOT_GITHUB_TOKEN",
+                "ANTHROPIC_API_KEY",
+                "BENCH_PROBE",
+            )
         },
         "config_files": sorted(p.name for p in home.iterdir()) if home.is_dir() else None,
         "start": time.time(),

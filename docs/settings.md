@@ -13,6 +13,9 @@ base: 6ec95b3                   # any commit-ish in that repository
 plan: .scratch/my-plan          # optional; may be ignored by git
 results: .bench/results         # optional; this is the default
 pre_build: [npm ci]             # optional; run in each Trial before the agent
+env:                            # optional; variables for every command and agent the Experiment starts
+  PATH: $HOME/.local/share/mise/shims:${PATH}
+runtime_check: node --version | grep -q '^v24\.'   # optional; must pass before each build and the checks
 checks: npm run check           # optional; run by `judge` in a copy of each Trial
 checks_in_place: false          # optional; run the checks in each Trial's own workspace instead
 copy_setup: [mise trust]        # optional; run in every throwaway copy of a Trial before it is used
@@ -61,6 +64,42 @@ merge_judge: diff-only          # optional; the Judge that merges Findings (defa
 
 A settings file with missing or wrong fields is rejected before anything
 runs, with every problem named.
+
+## The environment
+
+Every process build-bench starts for an Experiment inherits the shell it was
+started from, so a build can run on a different Node or Python than the base
+commit pins. `env` sets variables for all of them: `runtime_check`,
+`pre_build`, `copy_setup`, the checks, the building agents, and Agent Judges
+in every judging step. Its `PATH` also decides which `claude` or `copilot` is
+found and whose version is checked. build-bench's own `git` calls do not use
+it.
+
+```yaml
+# Run everything on the runtimes mise pins in the repository.
+env:
+  PATH: $HOME/.local/share/mise/shims:${PATH}
+runtime_check: node --version | grep -q '^v24\.'
+```
+
+- `$NAME` and `${NAME}` in a value are replaced from build-bench's own
+  environment when the settings load. A name that is not set is a settings
+  error, so a typo never becomes an empty `PATH` entry.
+- For an agent, `env` is applied after build-bench clears the variables that
+  would tie it to another session, and before it sets the config folder and
+  the login, so `env` can never replace those (see
+  [headless-trials.md](headless-trials.md#environment)).
+- The settings file is copied into the results folder as written, so `env`
+  must not hold secrets. Keep keys in the shell, as the logins below are.
+
+`runtime_check` is one shell command that fails when the runtime is wrong. It
+runs in the workspace before `pre_build`, for every Trial and for the checks
+on the base commit. When it fails, the Trial fails before any agent starts,
+with the end of what the command wrote to stderr as the reason. `judge` runs
+it again before the checks, in the folder they will run in, after
+`copy_setup`, because `judge` may be started from a different shell than
+`run`. There a failure records the checks as not run, with the reason; the
+Trial is still judged. It does not run before Judges.
 
 ## Where the checks run
 
