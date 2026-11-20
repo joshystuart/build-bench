@@ -139,6 +139,7 @@ def trial_row(trial, judges: list[str], defects: list[dict] | None) -> dict[str,
         "test_added": line_counts.get("test_added"),
         "test_removed": line_counts.get("test_removed"),
         "checks_passed": bool(checks.get("passed")) if checks.get("ran") else None,
+        "checks": _each_check(checks),
         "final_message": _text(trial.folder / "summary.md"),
         "changed_nothing": _changed_nothing(trial.folder),
         "findings": {},
@@ -184,6 +185,18 @@ def trial_row(trial, judges: list[str], defects: list[dict] | None) -> dict[str,
     if timeline:
         row["timeline"] = timeline
     return row
+
+
+def _each_check(checks: dict) -> dict[str, str]:
+    """Each Check's result: passed, failed or timed out. Checks saved before each
+    had a result of its own count as one Check named `checks`."""
+    if not checks.get("ran"):
+        return {}
+    each = checks.get("checks") or [{"name": "checks", **checks}]
+    return {
+        c["name"]: "passed" if c.get("passed") else "timed out" if c.get("timed_out") else "failed"
+        for c in each
+    }
 
 
 def _text(path: Path) -> str | None:
@@ -346,6 +359,8 @@ def build_report(settings: Settings, folder: Path) -> dict:
 
     order = [v.name for v in settings.variants]
     order += sorted({r["variant"] for r in rows} - set(order))
+    check_names = [c.name for c in settings.named_checks]
+    check_names += sorted({n for r in rows for n in r["checks"]} - set(check_names))
     variants = []
     for name in order:
         mine = [r for r in rows if r["variant"] == name]
@@ -365,6 +380,15 @@ def build_report(settings: Settings, folder: Path) -> dict:
                         "passed": sum(1 for r in mine if r["checks_passed"]),
                         "ran": sum(1 for r in mine if r["checks_passed"] is not None),
                         "trials": len(mine),
+                    },
+                    "by_check": {
+                        name: {
+                            "passed": sum(1 for r in mine if r["checks"].get(name) == "passed"),
+                            "ran": sum(1 for r in mine if name in r["checks"]),
+                            "trials": len(mine),
+                        }
+                        for name in check_names
+                        if any(name in r["checks"] for r in rows)
                     },
                     **{k: aggregate([r[k] for r in done], d) for k, _, d in QUALITY},
                 },
@@ -490,6 +514,7 @@ def build_report(settings: Settings, folder: Path) -> dict:
             # Whether `run` saw the checks pass on the base commit, before any build.
             "checks_passed_on_the_base": bool(base_checks.get("passed")),
         },
+        "check_names": [n for n in check_names if any(n in r["checks"] for r in rows)],
         "variants": variants,
         "differences": _differences(variants, rows),
         "defects": defect_rows if defects is not None else None,
@@ -546,7 +571,15 @@ def _summary(variants: list[dict], group: str, columns) -> list[list[str]]:
     ]
 
 
-def _checks_cell(checks: dict) -> str:
+def _checks_cell(quality: dict) -> str:
+    """Trials passed of all Trials: per Check when there are several."""
+    by_check = quality["by_check"]
+    if len(by_check) > 1:
+        return " · ".join(
+            f"{name} {c['passed']}/{c['trials']}" if c["ran"] else f"{name} –"
+            for name, c in by_check.items()
+        )
+    checks = quality["checks"]
     return f"{checks['passed']}/{checks['trials']}" if checks["ran"] else "–"
 
 
@@ -603,7 +636,7 @@ def tables(data: dict) -> list[Table]:
             "Quality",
             labels + ["Checks passed"] + [label for _, label, _ in QUALITY],
             [
-                [v["name"], f"{v['finished']}/{v['trials']}", _checks_cell(v["quality"]["checks"])]
+                [v["name"], f"{v['finished']}/{v['trials']}", _checks_cell(v["quality"])]
                 + [cell(v["quality"][k]) for k, _, _ in QUALITY]
                 for v in variants
             ],
@@ -612,6 +645,18 @@ def tables(data: dict) -> list[Table]:
             "are what one Judge listed for one Trial, on average.",
         ),
     ]
+    if len(data["check_names"]) > 1:
+        found.append(
+            Table(
+                "Checks",
+                ["Trial"] + data["check_names"],
+                [
+                    [r["trial"]] + [r["checks"].get(name, "–") for name in data["check_names"]]
+                    for r in data["trials"]
+                ],
+                "Each Check's result in each Trial. – means it was not run.",
+            )
+        )
     if any(any(d["measures"].values()) for d in data["differences"]):
         found.append(
             Table(

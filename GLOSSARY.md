@@ -20,6 +20,11 @@ One build of one variant from the base commit. A variant with three repeats
 has three trials.
 _Avoid_: Run, attempt, session
 
+**Check**:
+One named command the project must pass, such as its linter or its UI tests.
+A trial gets a result for each check.
+_Avoid_: Test, gate. A defect check is something else.
+
 **Judge**:
 Something that reviews a trial: either an agent that can inspect the trial, or
 a single model call that reads the evidence it is sent.

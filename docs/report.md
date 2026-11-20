@@ -10,8 +10,12 @@ One line per Variant unless noted.
 - **Build** and **Output:** the average over finished Trials, with the lowest
   and highest.
 - **Quality:** how many Trials finished and how many passed the checks, both
-  out of every Trial, so a Trial that failed counts against its Variant. Then
-  the Defects one Trial has, by severity, and the nits one Judge listed.
+  out of every Trial, so a Trial that failed counts against its Variant. With
+  several named Checks, the Trials that passed each one (`lint 3/3 · ui 1/3`).
+  Then the Defects one Trial has, by severity, and the nits one Judge listed.
+- **Checks:** with several named Checks, one line per Trial with each Check's
+  result: passed, failed, timed out, or – when it was not run. Results saved
+  before Checks had names count as one Check named `checks`.
 - **Differences:** one line per pair of Variants. See below.
 - **Defects:** one line per Defect that some Trials have and others do not,
   worst first, with the Trials of each Variant that have it. A Trial has a
@@ -84,7 +88,7 @@ compare anything. Whatever separates them is noise.
     status.json  prompt.md  stream.jsonl  stderr.log  summary.md
     transcript/main.jsonl  transcript/subagents/
     diff.patch  diff-full.patch  plan.diff  timings.json  pre_build.log
-    measurements.json  checks.log
+    measurements.json  checks.log  checks/<check>.log
     verdicts/<judge>.json  defect-checks/<judge>.json
   defects.json
   comparisons/<judge>/<trial>__<trial>.json

@@ -64,6 +64,13 @@ class Variant(_Strict):
     repeats: int = Field(default=1, ge=1)
 
 
+class CheckCommand(_Strict):
+    """One Check: a named command the project must pass."""
+
+    name: str = Field(pattern=NAME_PATTERN)
+    command: str
+
+
 class Compare(_Strict):
     #: The most pairs of Trials this Judge compares, spread over the Variants.
     max_pairs: int = Field(ge=1)
@@ -89,7 +96,8 @@ class Settings(_Strict):
     plan: Path | None = None
     results: Path = Path(".bench/results")
     pre_build: list[str] = []
-    checks: str | None = None
+    #: One command, or a list of named Checks.
+    checks: str | list[CheckCommand] | None = None
     #: Run the checks in each Trial's own workspace, put back afterwards, not in a copy.
     checks_in_place: bool = False
     #: Commands run in every throwaway copy of a Trial before it is used.
@@ -134,6 +142,19 @@ class Settings(_Strict):
     def folder(self) -> Path:
         assert self.path is not None
         return self.path.parent
+
+    @property
+    def named_checks(self) -> list[CheckCommand]:
+        """Every Check, in order. A `checks` string is one Check named `checks`."""
+        if isinstance(self.checks, str):
+            return [CheckCommand(name="checks", command=self.checks)]
+        return list(self.checks or [])
+
+    @property
+    def checks_command(self) -> str | None:
+        """The checks as one command line, as saved for the checks as a whole."""
+        named = self.named_checks
+        return " && ".join(c.command for c in named) if named else None
 
     @property
     def auth_variable(self) -> str:
@@ -198,7 +219,8 @@ def load(path: str | Path) -> Settings:
     try:
         settings = Settings.model_validate(raw)
     except ValidationError as error:
-        raise SettingsError([_describe(path, e) for e in error.errors()]) from None
+        errors = [e for e in error.errors() if not _other_branch(e, raw)]
+        raise SettingsError([_describe(path, e) for e in errors]) from None
 
     settings.path = path
     problems = _check(settings)
@@ -207,8 +229,19 @@ def load(path: str | Path) -> Settings:
     return settings
 
 
+def _other_branch(error: Any, raw: dict) -> bool:
+    """An error for the string form of `checks` when the file gives a list, or
+    the other way round: only the form the file uses is worth naming."""
+    loc = error["loc"]
+    if len(loc) < 2 or loc[0] != "checks":
+        return False
+    return (loc[1] == "str") == isinstance(raw.get("checks"), list)
+
+
 def _describe(path: Path, error: Any) -> str:
-    where = ".".join(str(part) for part in error["loc"]) or "(top level)"
+    # A union names the form it tried (`str`, `list[CheckCommand]`); leave that out.
+    loc = [p for p in error["loc"] if not (isinstance(p, str) and (p == "str" or "[" in p))]
+    where = ".".join(str(part) for part in loc) or "(top level)"
     message = error["msg"]
     if error["type"] == "missing":
         message = "required field is missing"
@@ -283,6 +316,10 @@ def _check(s: Settings) -> list[str]:
             problems.append(f"judges.{i}.api_key_env: only for api judges")
         if judge.type == "api" and judge.effort:
             problems.append(f"judges.{i}.effort: only for claude and copilot judges")
+
+    check_names = [c.name for c in s.named_checks]
+    for name in sorted({n for n in check_names if check_names.count(n) > 1}):
+        problems.append(f"checks: name {name!r} is used more than once")
 
     for i, language in enumerate(s.languages):
         if find_preset(s, language) is None:

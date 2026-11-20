@@ -27,7 +27,7 @@ from .results import (
     workspaces,
     write_json,
 )
-from .settings import Settings
+from .settings import CheckCommand, Settings
 
 WARNING = """\
 WARNING: build-bench starts coding agents with every permission check bypassed.
@@ -221,14 +221,41 @@ def run(
     return [t for t in planned_trials(settings, folder) if not t.finished]
 
 
-def checks_in(settings: Settings, cwd: Path) -> tuple[dict, str]:
-    """Run `checks` in `cwd`. Returns what happened and the command's output."""
-    assert settings.checks is not None
+def checks_in(settings: Settings, cwd: Path) -> tuple[dict, dict[str, str]]:
+    """Run every Check in `cwd`, in order, even after one fails. Returns what
+    happened, for the checks as a whole and for each Check, and each Check's output."""
+    each, outputs = [], {}
+    for check in settings.named_checks:
+        result, outputs[check.name] = _check_in(settings, check, cwd)
+        each.append(result)
+    failed = [c for c in each if not c["passed"]]
+    whole = {
+        "ran": True,
+        "command": settings.checks if isinstance(settings.checks, str) else settings.checks_command,
+        "passed": not failed,
+        "exit_code": failed[0]["exit_code"] if failed else 0,
+        "timed_out": any(c["timed_out"] for c in each),
+        "seconds": round(sum(c["seconds"] for c in each), 3),
+        "checks": each,
+    }
+    return whole, outputs
+
+
+def checks_output(settings: Settings, outputs: dict[str, str]) -> str:
+    """Every Check's output as one log: a single Check's as it is, several each
+    under the command that wrote it."""
+    if len(outputs) == 1:
+        return next(iter(outputs.values()))
+    commands = {c.name: c.command for c in settings.named_checks}
+    return "".join(f"$ {commands.get(name, name)}\n{text}" for name, text in outputs.items())
+
+
+def _check_in(settings: Settings, check: CheckCommand, cwd: Path) -> tuple[dict, str]:
     timeout = settings.limits.timeout_minutes
     started = time.time()
     try:
         done = subprocess.run(
-            settings.checks,
+            check.command,
             shell=True,
             cwd=cwd,
             env=settings.environment(),
@@ -240,8 +267,8 @@ def checks_in(settings: Settings, cwd: Path) -> tuple[dict, str]:
     except subprocess.TimeoutExpired as error:
         output, code = error.stdout or b"", None
     result = {
-        "ran": True,
-        "command": settings.checks,
+        "name": check.name,
+        "command": check.command,
         "passed": code == 0,
         "exit_code": code,
         "timed_out": code is None,
@@ -300,9 +327,9 @@ def check_base(settings: Settings, folder: Path, say=print) -> None:
     if not settings.checks or not settings.check_base:
         return
     saved = read_json(folder / "base-checks.json") or {}
-    if saved.get("passed") and saved.get("command") == settings.checks:
+    if saved.get("passed") and saved.get("command") == settings.checks_command:
         return
-    say(f"Running the checks (`{settings.checks}`) on the base commit…")
+    say(f"Running the checks (`{settings.checks_command}`) on the base commit…")
     log = folder / "base-checks.log"
     home = (workspaces(folder) or folder) / "base"
     repo = home / "repo"
@@ -318,9 +345,12 @@ def check_base(settings: Settings, folder: Path, say=print) -> None:
         if failure:
             result = {"ran": False, "passed": False, "reason": failure}
         if not result:
-            result, output = checks_in(settings, repo)
+            result, outputs = checks_in(settings, repo)
+            result["command"] = settings.checks_command
             with log.open("a") as out:
-                out.write(f"$ {settings.checks}\n{output}")
+                if len(outputs) == 1:
+                    out.write(f"$ {settings.checks_command}\n")
+                out.write(checks_output(settings, outputs))
     finally:
         shutil.rmtree(home, ignore_errors=True)
     _redact_file(log, secrets(settings))
@@ -331,10 +361,10 @@ def check_base(settings: Settings, folder: Path, say=print) -> None:
     if not result["ran"]:
         why = f"{result['reason']} on the base commit"
     elif result["timed_out"]:
-        why = f"the checks (`{settings.checks}`) timed out on the base commit"
+        why = f"the checks (`{settings.checks_command}`) timed out on the base commit"
     else:
         why = (
-            f"the checks (`{settings.checks}`) fail on the base commit "
+            f"the checks (`{settings.checks_command}`) fail on the base commit "
             f"with exit code {result['exit_code']}"
         )
     tail = log.read_text(errors="replace").splitlines()[-BASE_LOG_LINES:]

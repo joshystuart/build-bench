@@ -16,7 +16,7 @@ pre_build: [npm ci]             # optional; run in each Trial before the agent
 env:                            # optional; variables for every command and agent the Experiment starts
   PATH: $HOME/.local/share/mise/shims:${PATH}
 runtime_check: node --version | grep -q '^v24\.'   # optional; must pass before each build and the checks
-checks: npm run check           # optional; run by `judge` in a copy of each Trial
+checks: npm run check           # optional; run by `judge` in a copy of each Trial; or a list of named Checks
 checks_in_place: false          # optional; run the checks in each Trial's own workspace instead
 copy_setup: [mise trust]        # optional; run in every throwaway copy of a Trial before it is used
 check_base: true                # optional; `run` first makes sure `checks` passes on `base` (the default)
@@ -64,6 +64,30 @@ merge_judge: diff-only          # optional; the Judge that merges Findings (defa
 
 A settings file with missing or wrong fields is rejected before anything
 runs, with every problem named.
+
+## Named Checks
+
+`checks` can be one command, or a list of named Checks, each with its own
+result:
+
+```yaml
+checks:
+  - name: lint                  # letters, digits, . _ -; each name once
+    command: pnpm lint
+  - name: api
+    command: pnpm test:api
+  - name: ui
+    command: pnpm test:ui
+```
+
+Every Check runs, in order, even after one fails, each with the Experiment's
+`timeout_minutes`. A Trial's `measurements.json` keeps the result for the
+checks as a whole (they pass only when every Check passes) and adds one per
+Check: its name, command, whether it passed, exit code, whether it timed out,
+and how long it took. Each Check's output is in `checks/<name>.log` beside
+`checks.log`. A `checks` string is one Check named `checks`, and works as it
+always has. Judges are told each Check's result; an API Judge is sent each
+Check's output, cut to its end.
 
 ## The environment
 

@@ -31,7 +31,15 @@ from typing import Any
 from . import lines, transcript
 from .agent import STOPPED, AgentRequest, Agents
 from .results import Trial, read_json, saved_trials, write_json
-from .run import checks_in, git, in_parallel, make_workspace, run_steps, runtime_problem
+from .run import (
+    checks_in,
+    checks_output,
+    git,
+    in_parallel,
+    make_workspace,
+    run_steps,
+    runtime_problem,
+)
 from .settings import Judge, Settings, path_rules
 
 #: A Finding's severity, worst first.
@@ -128,9 +136,7 @@ def run_checks(settings: Settings, trial: Trial) -> dict:
             with (trial.folder / "checks.log").open("w") as out:
                 failure = runtime_problem(settings, trial.workspace, out)
             if not failure:
-                result, output = checks_in(settings, trial.workspace)
-                with (trial.folder / "checks.log").open("a") as out:
-                    out.write(output)
+                result = _checks_with_logs(settings, trial, trial.workspace)
             _put_back(trial.workspace, index, before)
         return {"ran": False, "reason": failure} if failure else result
     log = trial.folder / "checks.log"
@@ -143,9 +149,19 @@ def run_checks(settings: Settings, trial: Trial) -> dict:
             )
         if failure:
             return {"ran": False, "reason": failure}
-        result, output = checks_in(settings, copy)
-    with log.open("a") as out:
-        out.write(output)
+        return _checks_with_logs(settings, trial, copy)
+
+
+def _checks_with_logs(settings: Settings, trial: Trial, cwd: Path) -> dict:
+    """Run the Checks in `cwd`; add their output to `checks.log`, and save each
+    Check's own in `checks/<name>.log`."""
+    result, outputs = checks_in(settings, cwd)
+    with (trial.folder / "checks.log").open("a") as out:
+        out.write(checks_output(settings, outputs))
+    logs = trial.folder / "checks"
+    logs.mkdir(exist_ok=True)
+    for name, text in outputs.items():
+        (logs / f"{name}.log").write_text(text)
     return result
 
 
@@ -254,14 +270,13 @@ def facts(trial: Trial) -> str:
     measured = read_json(trial.folder / "measurements.json") or {}
     counts = measured.get("lines") or {}
     checks = measured.get("checks") or {}
+    each = checks.get("checks") or []
     if not checks.get("ran"):
         ran = f"The checks were not run: {checks.get('reason')}."
-    elif checks.get("passed"):
-        ran = f"The checks (`{checks['command']}`) passed."
-    elif checks.get("timed_out"):
-        ran = f"The checks (`{checks['command']}`) timed out."
+    elif len(each) > 1 or (each and each[0]["name"] != "checks"):
+        ran = "\n- ".join(_outcome(f"The check `{c['name']}` (`{c['command']}`)", c) for c in each)
     else:
-        ran = f"The checks (`{checks['command']}`) failed with exit code {checks['exit_code']}."
+        ran = _outcome(f"The checks (`{checks['command']}`)", checks)
     return (
         "## Already measured\n\n"
         f"- Production lines: {counts.get('prod_added', 0)} added, "
@@ -269,6 +284,14 @@ def facts(trial: Trial) -> str:
         f"{counts.get('test_added', 0)} added, {counts.get('test_removed', 0)} removed.\n"
         f"- {ran}\n"
     )
+
+
+def _outcome(what: str, result: dict) -> str:
+    if result.get("passed"):
+        return f"{what} passed."
+    if result.get("timed_out"):
+        return f"{what} timed out."
+    return f"{what} failed with exit code {result['exit_code']}."
 
 
 def evidence(settings: Settings, folder: Path, trial: Trial, label: str) -> str:
@@ -295,15 +318,32 @@ def trial_parts(trial: Trial) -> list[str]:
     diff = _text(trial.folder / "diff.patch")
     parts = [f"## Diff against the base commit\n\n{FOLDED}\n\n```diff\n{diff}```\n", facts(trial)]
     checks = (read_json(trial.folder / "measurements.json") or {}).get("checks") or {}
-    if checks.get("ran"):
-        output = _text(trial.folder / "checks.log")
-        if len(output) > CHECKS_LIMIT:
-            output = "[earlier output cut]\n" + output[-CHECKS_LIMIT:]
+    if not checks.get("ran"):
+        return parts
+    each = checks.get("checks")
+    if not each:
+        # Saved before each Check had its own log.
+        output = _cut(_text(trial.folder / "checks.log"))
         parts.append(
             f"## Checks output\n\nCommand: `{checks['command']}`, exit code "
             f"{checks['exit_code']}.\n\n```\n{output}\n```\n"
         )
+        return parts
+    parts.append("## Checks output\n")
+    for c in each:
+        output = _cut(_text(trial.folder / "checks" / f"{c['name']}.log"))
+        parts.append(
+            f"### {c['name']}\n\nCommand: `{c['command']}`, exit code {c['exit_code']}."
+            f"\n\n```\n{output}\n```\n"
+        )
     return parts
+
+
+def _cut(output: str) -> str:
+    """Long output cut to its end, where the failures are usually summed up."""
+    if len(output) > CHECKS_LIMIT:
+        return "[earlier output cut]\n" + output[-CHECKS_LIMIT:]
+    return output
 
 
 def _call(fn, timeout: float | None, agent: Agents):
@@ -435,11 +475,15 @@ def base_commit(settings: Settings, folder: Path) -> str:
 
 def where_things_are(settings: Settings) -> str:
     """Where an Agent Judge finds the plan, and the checks command."""
-    checks = (
-        f"The project's checks command is `{settings.checks}`."
-        if settings.checks
-        else "The settings name no checks command; find and run the project's own tests."
-    )
+    named = settings.named_checks
+    if isinstance(settings.checks, str):
+        checks = f"The project's checks command is `{settings.checks}`."
+    elif named:
+        listed = [f"`{c.name}` (`{c.command}`)" for c in named]
+        joined = ", ".join(listed[:-1]) + " and " + listed[-1] if len(listed) > 1 else listed[0]
+        checks = f"The project's checks are {joined}."
+    else:
+        checks = "The settings name no checks command; find and run the project's own tests."
     plan = (
         f"The plan is in `{settings.plan_rel}/`, as it was before the build started."
         if settings.plan_rel

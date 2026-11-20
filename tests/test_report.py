@@ -776,3 +776,15 @@ def test_checks_that_no_trial_passed_are_flagged(experiment, cli, no_models):
     trial(folder, "alpha-2", checks=True)
     cli("report", settings)
     assert "No Trial passed the checks" not in (folder / "report.md").read_text()
+
+
+def test_checks_saved_before_named_checks_report_as_one_check(saved, cli, no_models):
+    settings, folder = saved
+    cli("report", settings)
+    data = json.loads((folder / "report.json").read_text())
+    v1 = data["variants"][0]
+    assert v1["quality"]["by_check"] == {"checks": {"passed": 1, "ran": 2, "trials": 3}}
+    assert {t["trial"]: t["checks"] for t in data["trials"]}["v1-2"] == {"checks": "failed"}
+    md = (folder / "report.md").read_text()
+    assert "## Checks" not in md
+    assert "| v1 | 2/3 | 1/3 |" in md
