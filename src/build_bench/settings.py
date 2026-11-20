@@ -127,6 +127,8 @@ class Settings(_Strict):
     judges: list[Judge] = []
     #: The Judge that merges Findings into Defects; the first Judge when not named.
     merge_judge: str | None = None
+    #: A file whose text is added to every judging prompt, under its own heading.
+    judge_guidance: Path | None = None
 
     # Filled in by load(), never read from the file.
     path: Path | None = Field(default=None, exclude=True)
@@ -321,6 +323,11 @@ def _check(s: Settings) -> list[str]:
     check_names = [c.name for c in s.named_checks]
     for name in sorted({n for n in check_names if check_names.count(n) > 1}):
         problems.append(f"checks: name {name!r} is used more than once")
+
+    if s.judge_guidance is not None:
+        s.judge_guidance = (folder / s.judge_guidance).resolve()
+        if not s.judge_guidance.is_file():
+            problems.append(f"judge_guidance: file not found: {s.judge_guidance}")
 
     for i, language in enumerate(s.languages):
         if find_preset(s, language) is None:

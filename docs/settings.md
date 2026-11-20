@@ -60,6 +60,7 @@ judges:
     limits: { timeout_minutes: 10 }   # optional; falls back to the Experiment's
     compare: { max_pairs: 12 }  # optional; also compare pairs of Trials (off when left out)
 merge_judge: diff-only          # optional; the Judge that merges Findings (default: the first)
+judge_guidance: guidance.md     # optional; added to every judging prompt (see judging.md)
 ```
 
 A settings file with missing or wrong fields is rejected before anything

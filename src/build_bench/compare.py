@@ -83,7 +83,7 @@ def target(folder: Path, j: Judge, first: Trial, second: Trial) -> Path:
 
 def compare(settings: Settings, folder: Path, trials: list[Trial], say, agent: Agents) -> bool:
     """Ask each Judge with `compare` set about each of its pairs not yet compared."""
-    instructions = shipped_prompt("compare")
+    instructions = shipped_prompt(settings, "compare")
     sha = _sha(instructions)
     wanted = [
         (j, first, second)

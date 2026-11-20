@@ -134,6 +134,30 @@ result can stand clear of a coin toss. When `max_pairs` is larger than the
 number of Trials, Trials are used in more than one pair; those pairs are not
 independent, so the result is then more confident than it should be.
 
+## Guidance for the Judges
+
+To steer every Judge without rewriting a prompt, name a Markdown file in
+`judge_guidance`:
+
+```yaml
+judge_guidance: guidance.md     # beside the settings file
+```
+
+```markdown
+The base commit has no migrations folder yet; do not report that.
+A missing index on a foreign key is major.
+```
+
+Its text is added, under the heading "Guidance for this Experiment", to the
+end of every judging prompt: find, merge, check and compare, for Agent and API
+Judges alike. A Judge's own `prompt` replaces only the shipped find prompt,
+for that Judge alone; the guidance is added to it too, and reaches the steps
+whose prompts cannot be replaced. Changing the guidance file makes the next
+`judge` ask again for the Verdicts, Defect checks and Comparisons. Defects
+already merged keep their ids; only Findings not yet in a Defect are merged
+with the new guidance. Results judged before guidance was set are not judged
+again while the guidance stays unset.
+
 ## Failures and judging again
 
 A reply that is missing a severity, or names one that does not exist, is
@@ -144,7 +168,8 @@ Verdicts from two prompts; Defect checks and Comparisons are redone when
 build-bench's own prompt for them changes. The shipped prompts are in
 [src/build_bench/prompts/](../src/build_bench/prompts/): `judge.md` for
 Verdicts (a Judge's own `prompt` replaces it), `merge.md`, `check.md` and
-`compare.md`.
+`compare.md`. Changing `judge_guidance` counts as a change to every one of
+them.
 
 ## Why LiteLLM is pinned
 

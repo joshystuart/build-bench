@@ -225,12 +225,29 @@ class JudgeFailed(Exception):
     pass
 
 
-def shipped_prompt(name: str) -> str:
-    return (resources.files("build_bench") / "prompts" / f"{name}.md").read_text()
+#: The heading the Experiment's `judge_guidance` is added under.
+GUIDANCE_HEADING = "## Guidance for this Experiment"
 
 
-def judge_prompt(j: Judge) -> str:
-    return j.prompt.read_text() if j.prompt is not None else shipped_prompt("judge")
+def with_guidance(settings: Settings, prompt: str) -> str:
+    """`prompt` with the Experiment's guidance added under its own heading. With no
+    guidance it is unchanged, so its hash, and every result saved with it, holds."""
+    if settings.judge_guidance is None:
+        return prompt
+    return f"{prompt.rstrip()}\n\n{GUIDANCE_HEADING}\n\n{settings.judge_guidance.read_text()}"
+
+
+def shipped_prompt(settings: Settings, name: str) -> str:
+    """A shipped judging prompt, with the Experiment's guidance."""
+    shipped = (resources.files("build_bench") / "prompts" / f"{name}.md").read_text()
+    return with_guidance(settings, shipped)
+
+
+def judge_prompt(settings: Settings, j: Judge) -> str:
+    """The find prompt: the Judge's own, or the shipped one, with the guidance."""
+    if j.prompt is not None:
+        return with_guidance(settings, j.prompt.read_text())
+    return shipped_prompt(settings, "judge")
 
 
 def _sha(text: str) -> str:
@@ -635,7 +652,7 @@ def find(settings: Settings, folder: Path, trials: list[Trial], say, agent: Agen
     """Ask each Judge for a Verdict on each Trial that has none from its current prompt."""
     todo = []
     for j in settings.judges:
-        sha = _sha(judge_prompt(j))
+        sha = _sha(judge_prompt(settings, j))
         for trial in trials:
             saved = read_json(trial.folder / "verdicts" / f"{j.name}.json") or {}
             if saved.get("status") != "ok" or saved.get("prompt_sha") != sha:
@@ -659,7 +676,7 @@ def find(settings: Settings, folder: Path, trials: list[Trial], say, agent: Agen
 
 def find_one(settings: Settings, folder: Path, j: Judge, trial: Trial, agent: Agents) -> dict:
     label = f"trial-{secrets.token_hex(3)}"
-    instructions = judge_prompt(j)
+    instructions = judge_prompt(settings, j)
     target = trial.folder / "verdicts" / f"{j.name}.json"
     target.parent.mkdir(exist_ok=True)
     return _attempt(
@@ -744,7 +761,7 @@ def merge(settings: Settings, folder: Path, trials: list[Trial], say, agent: Age
             number += 1
         return {"defects": _with_severity(defects, found), "next_id": number}
 
-    instructions = shipped_prompt("merge")
+    instructions = shipped_prompt(settings, "merge")
     body = merge_request(defects, pending, found)
 
     def ask() -> tuple[str, float | None]:
@@ -840,7 +857,7 @@ def check(settings: Settings, folder: Path, trials: list[Trial], say, agent: Age
     defects = (read_json(folder / "defects.json") or {}).get("defects") or []
     if not defects:
         return True
-    instructions = shipped_prompt("check")
+    instructions = shipped_prompt(settings, "check")
     sha = _sha(instructions)
 
     def unanswered(j: Judge, trial: Trial) -> tuple[dict, list[dict]]:
