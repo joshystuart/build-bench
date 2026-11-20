@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import litellm
 import replies
-from conftest import results_folder, workspace_home
+from conftest import press_ctrl_c, results_folder, workspace_home
 
 #: `pre_build` records the folder it ran in, in a file git ignores, as a Docker
 #: Compose project name or a mise trust would; the checks pass only in that folder.
@@ -397,3 +397,52 @@ def test_the_report_marks_checks_that_fail_on_the_base(experiment, fake, cli):
     assert "setup fails on base · calc 0/2" in page
     assert "<td>fails on base</td>" in page
     assert "<strong>Regression:</strong> the check `calc` passed on the base commit" in page
+
+
+def test_a_stop_during_in_place_checks_still_puts_the_workspace_back(experiment, fake, cli):
+    settings = built(
+        experiment, cli, checks="echo changed > calc.py && sleep 2", checks_in_place=True
+    )
+    repo = workspace_home(results_folder(settings) / "trials" / "alpha-1") / "repo"
+    calc = (repo / "calc.py").read_text()
+    press_ctrl_c(lambda: (repo / "calc.py").read_text() != calc)
+    code, _, _ = cli("judge", settings)
+    assert code == 130
+    assert (repo / "calc.py").read_text() == calc
+
+
+def test_fresh_keeps_a_workspace_that_could_not_be_put_back_out_of_judging(experiment, fake, cli):
+    stuck = "mkdir stuck && echo x > stuck/new.txt && chmod 555 stuck"
+    settings = built(experiment, cli, checks=stuck, checks_in_place=True, judges=[agent_judge()])
+    assert cli("judge", settings)[0] == 1
+    # The workspace still holds what the checks left, even once it could be put back.
+    repo = workspace_home(results_folder(settings) / "trials" / "alpha-1") / "repo"
+    (repo / "stuck").chmod(0o755)
+    code, out, _ = cli("judge", settings, "--fresh")
+    assert code == 1
+    assert "[measure failed] alpha-1" in out
+    assert fake.calls(judge=True) == []
+
+
+def test_a_bad_check_base_names_the_values_it_takes(experiment, cli):
+    settings = experiment(checks="echo ok", check_base="maybe")
+    code, _, err = cli("run", settings)
+    assert code == 2
+    [line] = err.strip().splitlines()
+    assert line.endswith("check_base: must be true, false or mark")
+
+
+def test_a_base_result_saved_before_this_change_is_reused(experiment, fake, cli, tmp_path):
+    runs = tmp_path / "base-runs"
+    settings = experiment(
+        checks=f"echo ran >> {runs}",
+        variants=[{"name": "v", "prompt": "prompts/build.md", "model": "m", "repeats": 2}],
+    )
+    fake.set(per_cwd={"/v-2/": "crash"})
+    assert cli("run", settings)[0] == 1
+    base = results_folder(settings) / "base-checks.json"
+    saved = json.loads(base.read_text())
+    del saved["settings_key"]
+    base.write_text(json.dumps(saved))
+    assert cli("run", settings, "--resume")[0] == 1
+    assert runs.read_text() == "ran\n"

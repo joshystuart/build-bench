@@ -135,3 +135,11 @@ def test_a_wrong_runtime_at_judge_time_means_the_checks_were_not_run(experiment,
     assert checks["ran"] is False
     assert checks["reason"].endswith("expected v24, found v26")
     assert len(fake.calls(judge=True, kind="find")) == 1
+
+
+def test_env_can_set_an_agents_own_variables(experiment, fake, cli):
+    # Applied after the inherited ones are cleared, so a setting meant for the agent arrives.
+    settings = experiment(env={"CLAUDE_EFFORT": "from-env"})
+    assert cli("run", settings)[0] == 0
+    [build] = fake.calls()
+    assert build["env"]["CLAUDE_EFFORT"] == "from-env"

@@ -52,7 +52,7 @@ _Avoid_: Type, kind, class
 
 **Defect check**:
 One judge's answers, for one trial, to whether it has each defect and, when it
-does, how severe the defect is there.
+does, how severe the defect is there and whether the base commit already had it.
 _Avoid_: Confirmation, verification, vote
 
 **Comparison**:

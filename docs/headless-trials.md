@@ -231,11 +231,12 @@ When build-bench itself runs inside a Claude Code session, the environment
 carries that session's markers (`CLAUDECODE`, `CLAUDE_CODE_SESSION_ID`,
 `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_EFFORT` and others). An agent started with
 them would think it is nested in that session and could inherit its effort.
-build-bench adds the Experiment's `env` to its own environment, removes every
-variable starting with `CLAUDE`, plus `ANTHROPIC_API_KEY` and
-`ANTHROPIC_AUTH_TOKEN`, then sets `CLAUDE_CONFIG_DIR` and the one login
-variable. So `env` can change `PATH` (which also decides which `claude` is
-found and whose version is checked) but never the login or config folder. The real home folder is kept,
+build-bench removes every variable starting with `CLAUDE`, plus
+`ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN`, adds the Experiment's `env`,
+then sets `CLAUDE_CONFIG_DIR` and the one login variable. So `env` can change
+`PATH` (which also decides which `claude` is found and whose version is
+checked) or set a variable meant for the agent, but never the login or config
+folder. The real home folder is kept,
 so tool caches under it still work.
 
 ## The GitHub Copilot CLI
@@ -333,7 +334,7 @@ for a Copilot Trial. The time limit works as for Claude Code.
 
 ### Environment
 
-build-bench adds the Experiment's `env`, removes every variable starting with
-`COPILOT_` except `COPILOT_GITHUB_TOKEN`, so a default model or home folder set
-in the shell or in `env` does not follow the agent in, then sets
+build-bench removes every variable starting with `COPILOT_` except
+`COPILOT_GITHUB_TOKEN`, so a default model or home folder set in the shell
+does not follow the agent in, adds the Experiment's `env`, then sets
 `COPILOT_HOME`.

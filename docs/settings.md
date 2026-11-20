@@ -143,8 +143,8 @@ Two settings deal with this:
   files the checks added. Files git ignores (build output, caches) stay as the
   checks left them. If the workspace cannot be put back, `judge` prints why,
   saves the reason in the Trial's `measurements.json`, does not judge that
-  Trial, and exits with code 1. Delete that `measurements.json` to measure it
-  again once the workspace is fixed.
+  Trial, and exits with code 1. `judge --fresh` keeps that measurement too:
+  delete it by hand to measure the Trial again once the workspace is fixed.
 - `copy_setup` is a list of commands run in order in every throwaway copy
   before it is used: the checks copy, and each Agent Judge's copy for the
   find, check and compare steps. They do not run in the Trial's own workspace

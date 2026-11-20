@@ -228,12 +228,12 @@ def checks_in(settings: Settings, cwd: Path) -> tuple[dict, dict[str, str]]:
     happened, for the checks as a whole and for each Check, and each Check's output."""
     each, outputs = [], {}
     for check in settings.named_checks:
-        result, outputs[check.name] = _check_in(settings, check, cwd)
+        result, outputs[check.name] = _run_check(settings, check, cwd)
         each.append(result)
     failed = [c for c in each if not c["passed"]]
     whole = {
         "ran": True,
-        "command": settings.checks if isinstance(settings.checks, str) else settings.checks_command,
+        "command": settings.checks_command,
         "passed": not failed,
         "exit_code": failed[0]["exit_code"] if failed else 0,
         "timed_out": any(c["timed_out"] for c in each),
@@ -252,7 +252,7 @@ def checks_output(settings: Settings, outputs: dict[str, str]) -> str:
     return "".join(f"$ {commands.get(name, name)}\n{text}" for name, text in outputs.items())
 
 
-def _check_in(settings: Settings, check: CheckCommand, cwd: Path) -> tuple[dict, str]:
+def _run_check(settings: Settings, check: CheckCommand, cwd: Path) -> tuple[dict, str]:
     timeout = settings.limits.timeout_minutes
     started = time.time()
     try:
@@ -346,6 +346,15 @@ def check_base(settings: Settings, folder: Path, say=print) -> None:
     saved = read_json(folder / "base-checks.json") or {}
     if saved.get("settings_key") == key and (saved.get("passed") or settings.check_base == "mark"):
         return
+    # Saved before the key was: reused as it was then, while nothing new is set.
+    if (
+        "settings_key" not in saved
+        and saved.get("passed")
+        and saved.get("command") == settings.checks_command
+        and not settings.env
+        and not settings.runtime_check
+    ):
+        return
     say(f"Running the checks (`{settings.checks_command}`) on the base commit…")
     log = folder / "base-checks.log"
     home = (workspaces(folder) or folder) / "base"
@@ -389,7 +398,7 @@ def check_base(settings: Settings, folder: Path, say=print) -> None:
         return
     if not result["ran"]:
         why = f"{result['reason']} on the base commit"
-    elif not isinstance(settings.checks, str):
+    elif not settings.one_checks_command:
         named = [f"`{c['name']}` (`{c['command']}`)" for c in failing]
         why = (
             f"the check {named[0]} fails"

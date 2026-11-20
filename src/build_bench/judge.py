@@ -96,8 +96,11 @@ def judge(
 
 def forget_judging(folder: Path, trials: list[Trial]) -> None:
     """Remove what `judge` saved in a results folder, so every step runs again
-    and the Defect ids start from the first."""
+    and the Defect ids start from the first. A measurement whose workspace could
+    not be put back is kept: measuring it again would take the damage for the build."""
     for trial in trials:
+        if (read_json(trial.folder / "measurements.json") or {}).get("error"):
+            continue
         for name in ("measurements.json", "checks.log"):
             (trial.folder / name).unlink(missing_ok=True)
         for name in ("checks", "verdicts", "defect-checks"):
@@ -194,11 +197,15 @@ def run_checks(settings: Settings, trial: Trial) -> dict:
                 before = _snapshot(trial.workspace, index)
             except (RuntimeError, OSError) as error:
                 return {"ran": False, "reason": f"the workspace could not be saved: {error}"}
-            with (trial.folder / "checks.log").open("w") as out:
-                failure = runtime_problem(settings, trial.workspace, out)
-            if not failure:
-                result = _checks_with_logs(settings, trial, trial.workspace)
-            _put_back(trial.workspace, index, before)
+            try:
+                with (trial.folder / "checks.log").open("w") as out:
+                    failure = runtime_problem(settings, trial.workspace, out)
+                if not failure:
+                    result = _checks_with_logs(settings, trial, trial.workspace)
+            finally:
+                # Even when stopped halfway, so the next `judge` never takes what
+                # the checks left for the build.
+                _put_back(trial.workspace, index, before)
         return {"ran": False, "reason": failure} if failure else result
     log = trial.folder / "checks.log"
     with tempfile.TemporaryDirectory(prefix="build-bench-checks-") as tmp:
@@ -554,8 +561,8 @@ def base_commit(settings: Settings, folder: Path) -> str:
 def where_things_are(settings: Settings) -> str:
     """Where an Agent Judge finds the plan, and the checks command."""
     named = settings.named_checks
-    if isinstance(settings.checks, str):
-        checks = f"The project's checks command is `{settings.checks}`."
+    if settings.one_checks_command:
+        checks = f"The project's checks command is `{settings.checks_command}`."
     elif named:
         listed = [f"`{c.name}` (`{c.command}`)" for c in named]
         joined = ", ".join(listed[:-1]) + " and " + listed[-1] if len(listed) > 1 else listed[0]
@@ -812,9 +819,9 @@ def merge(settings: Settings, folder: Path, trials: list[Trial], say, agent: Age
         return True
 
     def parse(reply: str) -> dict:
-        kinds = {name: found[key].get("category") for name, key in pending.items()}
+        categories = {name: found[key].get("category") for name, key in pending.items()}
         existing = {d["id"]: d.get("category") for d in defects}
-        groups = check_groups(reply_json(reply, "defects"), existing, kinds)
+        groups = check_groups(reply_json(reply, "defects"), existing, categories)
         by_id = {d["id"]: d for d in defects}
         number = record["next_id"]
         for group in groups:
@@ -827,7 +834,7 @@ def merge(settings: Settings, folder: Path, trials: list[Trial], say, agent: Age
                 first = found[keys[0]]
                 group = {**group, "title": first["title"], "detail": first["detail"]}
             new = {"id": f"D{number}", "title": group["title"], "description": group["detail"]}
-            category = group["category"] or most_common([kinds[f] for f in group["findings"]])
+            category = group["category"] or most_common([categories[f] for f in group["findings"]])
             defects.append({**new, "category": category, "findings": keys})
             number += 1
         return {"defects": _with_severity(defects, found), "next_id": number}
@@ -926,10 +933,10 @@ def check_groups(
             problems.append(
                 f"defect {n} has category {category!r}, not one of {', '.join(CATEGORIES)}"
             )
-        kinds = {pending[f] for f in names} | ({category} if category in CATEGORIES else set())
-        kinds.discard(None)
-        if len(kinds) > 1:
-            listed = ", ".join(c for c in CATEGORIES if c in kinds)
+        mixed = {pending[f] for f in names} | ({category} if category in CATEGORIES else set())
+        mixed.discard(None)
+        if len(mixed) > 1:
+            listed = ", ".join(c for c in CATEGORIES if c in mixed)
             problems.append(f"defect {n} mixes findings of different categories: {listed}")
         if names:
             clean.append(

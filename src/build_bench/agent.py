@@ -101,10 +101,10 @@ class Headless:
         return found.group()
 
     def base_environment(self) -> dict[str, str]:
-        """This process's environment with the Experiment's `env` on top, scrubbed of
-        anything that would tie the agent to another session. The config folder and
-        login are set after this, so `env` can never replace them."""
-        return self.scrubbed({**os.environ, **self.env})
+        """This process's environment, scrubbed of anything that would tie the agent
+        to another session, with the Experiment's `env` on top. The config folder
+        and login are set after this, so `env` can never replace them."""
+        return {**self.scrubbed(dict(os.environ)), **self.env}
 
     def scrubbed(self, env: dict[str, str]) -> dict[str, str]:
         raise NotImplementedError

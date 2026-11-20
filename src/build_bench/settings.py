@@ -154,6 +154,11 @@ class Settings(_Strict):
         return list(self.checks or [])
 
     @property
+    def one_checks_command(self) -> bool:
+        """`checks` is one command, not a list of named Checks."""
+        return isinstance(self.checks, str)
+
+    @property
     def checks_command(self) -> str | None:
         """The checks as one command line, as saved for the checks as a whole."""
         named = self.named_checks
@@ -234,8 +239,11 @@ def load(path: str | Path) -> Settings:
 
 def _other_branch(error: Any, raw: dict) -> bool:
     """An error for the string form of `checks` when the file gives a list, or
-    the other way round: only the form the file uses is worth naming."""
+    the other way round: only the form the file uses is worth naming. Of the
+    two errors for a bad `check_base`, only one is kept."""
     loc = error["loc"]
+    if loc and loc[0] == "check_base":
+        return len(loc) > 1 and loc[1] != "bool"
     if len(loc) < 2 or loc[0] != "checks":
         return False
     return (loc[1] == "str") == isinstance(raw.get("checks"), list)
@@ -243,10 +251,14 @@ def _other_branch(error: Any, raw: dict) -> bool:
 
 def _describe(path: Path, error: Any) -> str:
     # A union names the form it tried (`str`, `list[CheckCommand]`); leave that out.
-    loc = [p for p in error["loc"] if not (isinstance(p, str) and (p == "str" or "[" in p))]
+    loc = [
+        p for p in error["loc"] if not (isinstance(p, str) and (p in ("str", "bool") or "[" in p))
+    ]
     where = ".".join(str(part) for part in loc) or "(top level)"
     message = error["msg"]
-    if error["type"] == "missing":
+    if loc == ["check_base"]:
+        message = "must be true, false or mark"
+    elif error["type"] == "missing":
         message = "required field is missing"
     elif error["type"] == "extra_forbidden":
         message = "unknown field"
