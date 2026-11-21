@@ -167,6 +167,19 @@ def test_clean_all_cleans_every_results_folder_and_workspaces_left_behind(
     assert (kept / "trials" / "v2-1" / "status.json").is_file()
 
 
+def test_clean_leaves_a_workspaces_folder_outside_the_cache(experiment, fake, cli, tmp_path):
+    settings = experiment(variants=VARIANTS[1:])
+    assert cli("run", settings)[0] == 0
+    folder = results_folder(settings)
+    elsewhere = tmp_path / "not-build-benchs"
+    elsewhere.mkdir()
+    (elsewhere / "keep.txt").write_text("mine")
+    meta = json.loads((folder / "experiment.json").read_text())
+    (folder / "experiment.json").write_text(json.dumps({**meta, "workspaces": str(elsewhere)}))
+    assert cli("clean", settings)[0] == 0
+    assert (elsewhere / "keep.txt").read_text() == "mine"
+
+
 def test_clean_takes_all_or_one_results_folder(experiment, cli):
     with pytest.raises(SystemExit):
         cli("clean", experiment(), "--all", "--results", "somewhere")

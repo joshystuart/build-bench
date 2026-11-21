@@ -18,7 +18,10 @@ def clean(folder: Path) -> int:
             removed += 1
     root = workspaces(folder)
     if root is not None and root.is_dir():
-        shutil.rmtree(root)
+        if root.resolve().parent == cached_workspaces().resolve():
+            shutil.rmtree(root)
+        elif not any(root.iterdir()):
+            root.rmdir()
     return removed
 
 

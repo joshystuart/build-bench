@@ -105,10 +105,13 @@ def owner(root: Path, settings: Settings) -> Path | None:
 
     From its `results-folder` file; for folders made before that file, from its
     name, when the name's hash matches a results folder of this Experiment."""
-    try:
-        return Path((root / OWNER).read_text().strip())
-    except (FileNotFoundError, NotADirectoryError):
-        pass
+    marker = root / OWNER
+    if marker.exists():
+        try:
+            found = Path(marker.read_text().strip())
+        except (OSError, UnicodeDecodeError):
+            return None
+        return found if found.is_absolute() else None
     prefix = f"{settings.name}-"
     start, _, digest = root.name.removeprefix(prefix).rpartition("-")
     if not root.name.startswith(prefix) or not start:
