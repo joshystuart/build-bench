@@ -155,8 +155,8 @@ step failed (the rest is still saved and reported), `2` nothing could start.
   full example.
 - [docs/trials.md](docs/trials.md): what a Trial is given, the live display,
   Copilot Trials and what is measured.
-- [docs/judging.md](docs/judging.md): how judging works, choosing Judges and
-  comparing pairs of Trials.
+- [docs/judging.md](docs/judging.md): how judging works, watching it, choosing
+  Judges and comparing pairs of Trials.
 - [docs/report.md](docs/report.md): every table, how differences are weighed
   and the results folder.
 - [GLOSSARY.md](GLOSSARY.md): what the words mean.

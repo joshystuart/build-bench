@@ -30,6 +30,8 @@ from typing import Any
 
 from . import lines, transcript
 from .agent import STOPPED, AgentRequest, Agents
+from .judge_progress import Ask, Board, ask_of
+from .progress import clock
 from .results import Trial, read_json, saved_trials, write_json
 from .run import (
     checks_in,
@@ -65,33 +67,76 @@ def judge(
     folder: Path,
     say=print,
     agent: Agents | None = None,
+    live: bool = False,
     *,
     fresh: bool = False,
 ) -> bool:
     """Measure, then find, merge and check. Returns False if any step failed.
-    With `fresh`, everything judging saved before is removed first."""
-    agent = agent or Agents(settings.env)
-    trials = saved_trials(folder)
-    if fresh:
-        say(
-            "Judging again from nothing (--fresh): measurements, Verdicts, Defects, "
-            "Defect checks and Comparisons."
-        )
-        forget_judging(folder, trials)
-    measured = [measure_trial(settings, folder, trial, say) for trial in trials]
-    ready = [
-        t
-        for t, m in zip(trials, measured, strict=True)
-        if t.finished and m is not None and not m.get("error")
-    ]
-    found = find(settings, folder, ready, say, agent)
-    merged = merge(settings, folder, ready, say, agent)
-    checked = check(settings, folder, ready, say, agent)
+    With `fresh`, everything judging saved before is removed first.
+
+    Each step says what it will do as it starts. With `live`, a display of the
+    step's asks is redrawn below the printed lines; it needs a terminal.
+    """
     from .compare import compare
 
-    compared = compare(settings, folder, ready, say, agent)
+    agent = agent or Agents(settings.env)
+    board = Board(settings, say)
+    with board.shown(live):
+        trials = saved_trials(folder)
+        if fresh:
+            board.say(
+                "Judging again from nothing (--fresh): measurements, Verdicts, Defects, "
+                "Defect checks and Comparisons."
+            )
+            forget_judging(folder, trials)
+        measured = measure(settings, folder, trials, board)
+        ready = [
+            t
+            for t, m in zip(trials, measured, strict=True)
+            if t.finished and m is not None and not m.get("error")
+        ]
+        found = find(settings, folder, ready, board, agent)
+        merged = merge(settings, folder, ready, board, agent)
+        checked = check(settings, folder, ready, board, agent)
+        compared = compare(settings, folder, ready, board, agent)
     unmeasured = any(m and m.get("error") for m in measured)
-    return found and merged and checked and compared and not unmeasured
+    ok = found and merged and checked and compared and not unmeasured
+    board.say(
+        f"[judge] finished in {clock(time.time() - board.started)}"
+        + ("" if ok else "; some steps failed (see above), `build-bench judge` tries them again")
+    )
+    return ok
+
+
+def measure(
+    settings: Settings, folder: Path, trials: list[Trial], board: Board
+) -> list[dict | None]:
+    """Measure each finished Trial not measured yet, one at a time; return each
+    Trial's measurements (None for a failed Trial)."""
+    todo = [t for t in trials if t.finished and not (t.folder / "measurements.json").exists()]
+    failed = sum(not t.finished for t in trials)
+    doing = "counting lines and cost" + (", then running the checks" if settings.checks else "")
+    asks = {t.id: Ask(t.id, doing=doing) for t in todo}
+    line = f"{len(todo)} Trial(s) to measure, {len(trials) - len(todo) - failed} already measured"
+    if failed:
+        line += f", {failed} failed and not judged"
+    board.step("measure", list(asks.values()), line)
+    measured: list[dict | None] = []
+    for trial in trials:
+        ask = asks.get(trial.id)
+        if ask is None:
+            measured.append(measure_trial(settings, folder, trial, board.say))
+            continue
+
+        def one(t: Trial = trial) -> dict:
+            m = measure_trial(settings, folder, t, board.say) or {}
+            measured.append(m)
+            if m.get("error"):
+                return {"status": "failed", "reason": m["error"]}
+            return {"status": "ok"}
+
+        board.asking(ask, one)
+    return measured
 
 
 def forget_judging(folder: Path, trials: list[Trial]) -> None:
@@ -729,27 +774,42 @@ def check_findings(value: dict) -> dict:
     return {"findings": clean, "note": _str(value.get("note"))}
 
 
-def find(settings: Settings, folder: Path, trials: list[Trial], say, agent: Agents) -> bool:
+def find(
+    settings: Settings, folder: Path, trials: list[Trial], board: Board, agent: Agents
+) -> bool:
     """Ask each Judge for a Verdict on each Trial that has none from its current prompt."""
     todo = []
     for j in settings.judges:
         sha = _sha(judge_prompt(settings, j))
         for trial in trials:
-            saved = read_json(trial.folder / "verdicts" / f"{j.name}.json") or {}
+            path = trial.folder / "verdicts" / f"{j.name}.json"
+            saved = read_json(path) or {}
             if saved.get("status") != "ok" or saved.get("prompt_sha") != sha:
-                todo.append((j, trial))
+                todo.append((j, trial, ask_of(f"{trial.id} by {j.name}", j, path.with_suffix(""))))
+    total = len(settings.judges) * len(trials)
+    if not settings.judges:
+        line = "no Judges in the settings"
+    elif not todo:
+        line = f"all {total} Verdict(s) already saved"
+    else:
+        line = (
+            f"{len(todo)} Verdict(s) to ask for, {total - len(todo)} already saved "
+            f"({len(settings.judges)} Judge(s) × {len(trials)} Trial(s), "
+            f"{settings.concurrency} at a time)"
+        )
+    board.step("find", [ask for *_, ask in todo], line)
     lock = threading.Lock()
 
-    def one(task: tuple[Judge, Trial]) -> None:
-        j, trial = task
-        verdict = find_one(settings, folder, j, trial, agent)
+    def one(task: tuple[Judge, Trial, Ask]) -> None:
+        j, trial, ask = task
+        verdict = board.asking(ask, lambda: find_one(settings, folder, j, trial, agent))
         with lock:
             if verdict["status"] == "ok":
-                say(f"[verdict] {trial.id} by {j.name}")
+                board.say(f"[verdict] {trial.id} by {j.name}")
             else:
-                say(f"[verdict failed] {trial.id} by {j.name}: {verdict['reason']}")
+                board.say(f"[verdict failed] {trial.id} by {j.name}: {verdict['reason']}")
 
-    in_parallel(one, todo, settings.concurrency, agent, say)
+    in_parallel(one, todo, settings.concurrency, agent, board.say)
     return all(
         _ok(t.folder / "verdicts" / f"{j.name}.json") for j in settings.judges for t in trials
     )
@@ -796,11 +856,14 @@ def merge_judge(settings: Settings) -> Judge | None:
     return named[0] if named else settings.judges[0]
 
 
-def merge(settings: Settings, folder: Path, trials: list[Trial], say, agent: Agents) -> bool:
+def merge(
+    settings: Settings, folder: Path, trials: list[Trial], board: Board, agent: Agents
+) -> bool:
     """Place every Finding not yet in a Defect: into a Defect that already
     exists, which keeps its id, or into a new one."""
     j = merge_judge(settings)
     if j is None:
+        board.step("merge", [], "no Judges in the settings")
         return True
     target = folder / "defects.json"
     saved = read_json(target) or {}
@@ -821,9 +884,16 @@ def merge(settings: Settings, folder: Path, trials: list[Trial], say, agent: Age
         defects=_with_severity(defects, found),
     )
     if not pending:
+        board.step("merge", [], f"no new Findings to merge ({len(defects)} Defect(s) so far)")
         record["status"] = "ok"
         write_json(target, record)
         return True
+    ask = ask_of(f"merge by {j.name}", j, target.with_suffix(""))
+    board.step(
+        "merge",
+        [ask],
+        f"{len(pending)} new Finding(s) to place among {len(defects)} Defect(s), by {j.name}",
+    )
 
     def parse(reply: str) -> dict:
         categories = {name: found[key].get("category") for name, key in pending.items()}
@@ -849,7 +919,7 @@ def merge(settings: Settings, folder: Path, trials: list[Trial], say, agent: Age
     instructions = shipped_prompt(settings, "merge")
     body = merge_request(defects, pending, found)
 
-    def ask() -> tuple[str, float | None]:
+    def call() -> tuple[str, float | None]:
         if j.type == "api":
             return _ask_api(settings, j, instructions, body, agent)
         with tempfile.TemporaryDirectory(prefix="build-bench-merge-") as tmp:
@@ -858,11 +928,11 @@ def merge(settings: Settings, folder: Path, trials: list[Trial], say, agent: Age
             prompt = f"{instructions}\n\n---\n\n{body}"
             return _ask_agent(settings, j, prompt, work, target.with_suffix(""), agent)
 
-    _attempt(record, target, ask, parse)
+    board.asking(ask, lambda: _attempt(record, target, call, parse))
     if record["status"] == "ok":
-        say(f"[merged] {len(found)} finding(s) into {len(defects)} defect(s) by {j.name}")
+        board.say(f"[merged] {len(found)} finding(s) into {len(defects)} defect(s) by {j.name}")
     else:
-        say(f"[merge failed] by {j.name}: {record['reason']}")
+        board.say(f"[merge failed] by {j.name}: {record['reason']}")
     return record["status"] == "ok"
 
 
@@ -974,10 +1044,13 @@ def check_groups(
 # --- Check: which Trials have which Defects ---------------------------------------
 
 
-def check(settings: Settings, folder: Path, trials: list[Trial], say, agent: Agents) -> bool:
+def check(
+    settings: Settings, folder: Path, trials: list[Trial], board: Board, agent: Agents
+) -> bool:
     """Ask each Judge, for each Trial, about every Defect it has not answered for."""
     defects = (read_json(folder / "defects.json") or {}).get("defects") or []
     if not defects:
+        board.step("check", [], "no Defects to check for")
         return True
     instructions = shipped_prompt(settings, "check")
     sha = _sha(instructions)
@@ -987,14 +1060,31 @@ def check(settings: Settings, folder: Path, trials: list[Trial], say, agent: Age
         answers = (saved.get("answers") or {}) if saved.get("prompt_sha") == sha else {}
         return saved, [d for d in defects if d["id"] not in answers]
 
-    todo = [(j, t) for j in settings.judges for t in trials if unanswered(j, t)[1]]
+    def path(j: Judge, trial: Trial) -> Path:
+        return trial.folder / "defect-checks" / f"{j.name}.json"
+
+    todo = [
+        (j, t, ask_of(f"{t.id} by {j.name}", j, path(j, t).with_suffix("")))
+        for j in settings.judges
+        for t in trials
+        if unanswered(j, t)[1]
+    ]
+    total = len(settings.judges) * len(trials)
+    if not todo:
+        line = f"every Trial already checked for all {len(defects)} Defect(s)"
+    else:
+        line = (
+            f"{len(todo)} of {total} Judge × Trial ask(s) about {len(defects)} Defect(s), "
+            f"{settings.concurrency} at a time"
+        )
+    board.step("check", [ask for *_, ask in todo], line)
     lock = threading.Lock()
 
-    def one(task: tuple[Judge, Trial]) -> None:
-        j, trial = task
+    def one(task: tuple[Judge, Trial, Ask]) -> None:
+        j, trial, ask = task
         saved, missing = unanswered(j, trial)
         label = f"trial-{secrets.token_hex(3)}"
-        target = trial.folder / "defect-checks" / f"{j.name}.json"
+        target = path(j, trial)
         target.parent.mkdir(exist_ok=True)
         kept = saved if saved.get("prompt_sha") == sha else {}
         record = _record(
@@ -1008,34 +1098,25 @@ def check(settings: Settings, folder: Path, trials: list[Trial], say, agent: Age
         asked = "## Known defects\n\n" + "\n".join(
             f"### {d['id']}: {d['title']}\n\n{d['description']}\n" for d in missing
         )
-        _attempt(
-            record,
-            target,
-            lambda: ask_about_trial(
-                settings,
-                folder,
-                j,
-                trial,
-                label,
-                instructions,
-                asked,
-                target.with_suffix(""),
-                agent,
-            ),
-            lambda reply: {
-                "answers": {
-                    **record["answers"],
-                    **check_answers(reply_json(reply, "answers"), [d["id"] for d in missing]),
-                }
-            },
-        )
+
+        def call() -> tuple[str, float | None]:
+            streams = target.with_suffix("")
+            return ask_about_trial(
+                settings, folder, j, trial, label, instructions, asked, streams, agent
+            )
+
+        def parse(reply: str) -> dict:
+            got = check_answers(reply_json(reply, "answers"), [d["id"] for d in missing])
+            return {"answers": {**record["answers"], **got}}
+
+        board.asking(ask, lambda: _attempt(record, target, call, parse))
         with lock:
             if record["status"] == "ok":
-                say(f"[checked] {trial.id} by {j.name}")
+                board.say(f"[checked] {trial.id} by {j.name}")
             else:
-                say(f"[check failed] {trial.id} by {j.name}: {record['reason']}")
+                board.say(f"[check failed] {trial.id} by {j.name}: {record['reason']}")
 
-    in_parallel(one, todo, settings.concurrency, agent, say)
+    in_parallel(one, todo, settings.concurrency, agent, board.say)
     return all(
         _ok(t.folder / "defect-checks" / f"{j.name}.json") and not unanswered(j, t)[1]
         for j in settings.judges

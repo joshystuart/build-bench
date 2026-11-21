@@ -6,6 +6,7 @@ Control keys (all optional):
     per_cwd       {substring of the working folder: mode}
     sleep         seconds to wait before answering
     events        stream events a build writes before it waits (to watch it mid-run)
+    judge_events  the same, for a Judge
     summary       the final summary a build reports
     judge_reply   the text a judge replies with when asked for a Verdict
     merge_reply   the text a judge replies with when asked to merge Findings
@@ -114,6 +115,9 @@ def main() -> int:
         # as an agent working through a plan would.
         _tick_plan(cwd)
         for event in control.get("events", []):
+            print(json.dumps(event), flush=True)
+    else:
+        for event in control.get("judge_events", []):
             print(json.dumps(event), flush=True)
     if mode == "stubborn":
         signal.signal(signal.SIGTERM, signal.SIG_IGN)

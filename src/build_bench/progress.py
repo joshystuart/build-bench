@@ -14,6 +14,9 @@ used, and named beside the bar:
 
 Time left for the Experiment comes from how long finished Trials took; until
 one has finished, only an upper bound from the timeout can be given.
+
+`Screen` does the redrawing; `judge` draws its own frames with it too (see
+`judge_progress.py`).
 """
 
 from __future__ import annotations
@@ -26,6 +29,7 @@ import statistics
 import sys
 import threading
 import time
+from collections.abc import Callable
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -390,22 +394,12 @@ def render(
     return lines
 
 
-class Live:
-    """Redraws the frame in place while Trials run; lines it is given print above it."""
+class Screen:
+    """Redraws a frame in place below the lines it is given to print. `frame`
+    makes each frame from the time now and the most lines it may take."""
 
-    def __init__(
-        self,
-        settings: Settings,
-        trials: list[Trial],
-        redo: list[Trial],
-        out: TextIO | None = None,
-        hint: str = "",
-    ):
-        self.settings = settings
-        self.hint = hint
-        self.trials = trials
-        self.started = time.time()
-        self.reader = Reader(settings, {t.id for t in redo}, self.started)
+    def __init__(self, frame: Callable[[float, int], list[Line]], out: TextIO | None = None):
+        self.frame = frame
         self.out = out or sys.stdout
         self.color = not os.environ.get("NO_COLOR")
         self._drawn = 0
@@ -413,7 +407,7 @@ class Live:
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._loop, daemon=True)
 
-    def __enter__(self) -> Live:
+    def __enter__(self) -> Screen:
         with self._lock:
             self._draw()
         self._thread.start()
@@ -446,13 +440,9 @@ class Live:
 
     def _draw(self) -> None:
         width, height = shutil.get_terminal_size()
-        now = time.time()
         try:
-            progress = [self.reader.read(t) for t in self.trials]
-            lines = render(
-                self.settings, progress, self.started, now, max(height - 1, 3), self.hint
-            )
-        except Exception:  # noqa: BLE001 - the display must never stop a run
+            lines = self.frame(time.time(), max(height - 1, 3))
+        except Exception:  # noqa: BLE001 - the display must never stop the work
             # Most often a file went away between two reads (a failed Trial
             # starting again); the next frame will find it.
             return
@@ -463,3 +453,26 @@ class Live:
             self.out.write(text + "\n")
         self.out.flush()
         self._drawn = len(lines)
+
+
+class Live(Screen):
+    """The display `run` draws: redrawn in place while Trials run."""
+
+    def __init__(
+        self,
+        settings: Settings,
+        trials: list[Trial],
+        redo: list[Trial],
+        out: TextIO | None = None,
+        hint: str = "",
+    ):
+        self.settings = settings
+        self.hint = hint
+        self.trials = trials
+        self.started = time.time()
+        self.reader = Reader(settings, {t.id for t in redo}, self.started)
+        super().__init__(self._frame, out)
+
+    def _frame(self, now: float, height: int) -> list[Line]:
+        progress = [self.reader.read(t) for t in self.trials]
+        return render(self.settings, progress, self.started, now, height, self.hint)

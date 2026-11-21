@@ -192,6 +192,41 @@ already merged keep their ids; only Findings not yet in a Defect are merged
 with the new guidance. Results judged before guidance was set are not judged
 again while the guidance stays unset.
 
+## Watching judge
+
+`judge` first measures each finished Trial (line counts, cost, and the checks
+run in a copy, one Trial at a time), then works through the steps above. Each
+step prints a line as it starts, saying how much it has to do and how much is
+already saved, then one line per ask as it ends:
+
+```
+[judge] measure: 4 Trial(s) to measure, 0 already measured
+[judge] find: 8 Verdict(s) to ask for, 0 already saved (2 Judge(s) × 4 Trial(s), 3 at a time)
+[verdict] opus-single-1 by opus
+[judge] merge: 17 new Finding(s) to place among 0 Defect(s), by opus
+[merged] 17 finding(s) into 9 defect(s) by opus
+[judge] check: 8 of 8 Judge × Trial ask(s) about 9 Defect(s), 3 at a time
+```
+
+In a terminal, `judge` also keeps a display below those lines: every step and
+how far it has got, then the current step's asks.
+
+```
+Judging                       measure ✓ · find 5/8 · merge · check · 6m40s elapsed
+find                          [██████████████████░░░░░░░░░░░░]  5/8 done · 3 running · 0 failed
+                              time left in this step: ~3m10s (from 5 finished ask(s))
+opus-single-2 by opus         agent claude-opus-5-5   time [██░░░░░░░░] 3m02s/15m00s   cost [█░░░░░░░░░] $0.41/$4.00
+                              now: Bash Run the tests · 8s ago
+opus-single-2 by gpt          api openai/gpt-5   time [█░░░░░░░░░] 1m02s/10m00s
+                              now: waiting for the reply
+opus-single-1 by opus         done in 4m12s
+```
+
+An Agent Judge's last step and cost so far come from the stream it writes. An
+API Judge says nothing until it replies, so only its time against its timeout
+is shown. Ctrl+C stops judging; running `judge` again carries on from what is
+saved.
+
 ## Failures and judging again
 
 A reply that is missing a severity, or names one that does not exist, is
