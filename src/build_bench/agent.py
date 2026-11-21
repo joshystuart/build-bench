@@ -14,7 +14,7 @@ import signal
 import subprocess
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -33,6 +33,8 @@ class AgentRequest:
     effort: str | None = None
     timeout_minutes: float | None = None
     max_budget_usd: float | None = None
+    #: Tools the agent may not use.
+    disallowed_tools: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -220,6 +222,8 @@ class ClaudeCode(Headless):
             cmd += ["--effort", request.effort]
         if request.max_budget_usd:
             cmd += ["--max-budget-usd", str(request.max_budget_usd)]
+        if request.disallowed_tools:
+            cmd += ["--disallowedTools", ",".join(request.disallowed_tools)]
         return cmd
 
     def environment(self, request: AgentRequest) -> dict[str, str]:
@@ -302,6 +306,8 @@ class Copilot(Headless):
         ]
         if request.effort:
             cmd += ["--effort", request.effort]
+        for tool in request.disallowed_tools:
+            cmd.append(f"--deny-tool={tool}")
         return cmd
 
     def environment(self, request: AgentRequest) -> dict[str, str]:

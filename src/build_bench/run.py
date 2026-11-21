@@ -523,6 +523,7 @@ def _build(settings: Settings, folder: Path, trial: Trial, agent: Headless) -> d
         auth=settings.agent_login(variant.agent),
         timeout_minutes=settings.limits.timeout_minutes,
         max_budget_usd=settings.limits.max_budget_usd,
+        disallowed_tools=settings.denied_tools(variant.agent, variant),
     )
     result = agent.start(request)
     write_json(

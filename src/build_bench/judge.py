@@ -569,6 +569,7 @@ def _ask_agent(
         auth=settings.agent_login(j.type),
         timeout_minutes=limits.timeout_minutes,
         max_budget_usd=limits.max_budget_usd,
+        disallowed_tools=settings.denied_tools(j.type),
     )
     result = agent.of(j.type).start(request)
     if result.failure:

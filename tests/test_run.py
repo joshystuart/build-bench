@@ -128,6 +128,29 @@ def test_one_trial_end_to_end(experiment, fake, cli, target_repo):
     assert (trial / "summary.md").read_text() == "Fake summary: all done."
 
 
+def test_wakeup_tools_are_denied_unless_the_settings_say_otherwise(experiment, fake, cli):
+    def denied(settings) -> list[str | None]:
+        assert cli("run", settings)[0] == 0
+        found = []
+        for call in fake.calls()[-len(yaml.safe_load(settings.read_text())["variants"]) :]:
+            argv = call["argv"]
+            found.append(
+                argv[argv.index("--disallowedTools") + 1] if "--disallowedTools" in argv else None
+            )
+        return found
+
+    # A pending wakeup keeps a headless Trial running long after its work is done.
+    assert denied(experiment()) == ["ScheduleWakeup,CronCreate"]
+    variants = [
+        {"name": "own", "prompt": "prompts/build.md", "model": "m", "disallowed_tools": []},
+        {"name": "shared", "prompt": "prompts/build.md", "model": "m"},
+    ]
+    assert denied(experiment(variants=variants, disallowed_tools=["WebFetch", "Monitor"])) == [
+        None,
+        "WebFetch,Monitor",
+    ]
+
+
 def test_an_experiment_with_no_plan_runs(experiment, fake, cli):
     settings = experiment(
         plan=None,

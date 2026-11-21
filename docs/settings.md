@@ -26,6 +26,7 @@ auth_env: MY_ANTHROPIC_KEY      # optional; the variable holding the login
 claude_version: 2.1.319         # optional; `run` stops if another version is installed
 copilot_version: 1.0.112        # optional; the same for the Copilot CLI
 limits: { timeout_minutes: 120, max_budget_usd: 40 }   # per Trial, both optional
+disallowed_tools: [ScheduleWakeup, CronCreate]   # optional; see "Denied tools" below
 languages: [typescript]         # optional presets: rust, typescript, python, go
 test_paths: ["e2e/**"]          # optional; added to the presets
 ignore_paths: ["**/*.generated.ts"]
@@ -42,6 +43,7 @@ variants:
       - skills/tdd
       - ~/.agents/skills/code-review
     repeats: 3
+    disallowed_tools: []        # optional; replaces the Experiment's list for this Variant
   - name: sonnet-subagents
     prompt: prompts/subagents.md
     model: claude-sonnet-5-5
@@ -65,6 +67,20 @@ judge_guidance: guidance.md     # optional; added to every judging prompt (see j
 
 A settings file with missing or wrong fields is rejected before anything
 runs, with every problem named.
+
+## Denied tools
+
+`disallowed_tools` names tools an agent may not use. A Variant's own list
+replaces the Experiment's, and the Experiment's applies to Agent Judges too.
+When neither names one, Claude Code is denied `ScheduleWakeup` and
+`CronCreate`, and the Copilot CLI nothing. A Trial has no one to wake it, and
+a pending wakeup keeps the agent running, idle, long after its work is done:
+in one Experiment, stale wakeups kept Trials running 13 to 25 minutes past
+their last real step. `disallowed_tools: []` allows every tool.
+
+Claude Code is given the list as `--disallowedTools`, which takes Claude
+Code's tool names and rules such as `Bash(git push:*)`; the Copilot CLI as one
+`--deny-tool` each, which takes rules such as `shell(git push)`.
 
 ## Named Checks
 
