@@ -163,7 +163,7 @@ def test_the_report_counts_defects_per_category_behaviour_first(experiment, cli,
         ("D3", "scope"),
     ]
     md = (folder / "report.md").read_text()
-    assert "| Variant | Finished | Behaviour | Test gaps | Scope |" in md
+    assert "| Variant | Built | Behaviour | Test gaps | Scope |" in md
     assert "| v1 | 4/4 | 1 | 1 | 1 |" in md
     assert "| v2 | 4/4 | 1 | 0 | 1 |" in md
     assert "| Defect | Category | Severity | What is wrong | Found by | v1 | v2 |" in md

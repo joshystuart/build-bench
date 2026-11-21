@@ -465,6 +465,20 @@ def test_a_bad_merge_fails_and_is_tried_again(experiment, fake, cli, stub, reply
     assert len(stub.sent("check")) == 2
 
 
+def test_no_judge_is_asked_about_a_build_that_changed_nothing(experiment, fake, cli, stub):
+    fake.set(per_cwd={"/secretvariant-2/": "nothing"})
+    settings = built(experiment, cli, judges=[api_judge()])
+    code, out, _ = cli("judge", settings)
+    assert code == 0, out
+    assert "[skip]  secretvariant-2: the build changed nothing, so no Judge is asked" in out
+    # Measured all the same: its cost and time were spent.
+    assert saved(settings, "trials", "secretvariant-2", "measurements.json")["cost_usd"] > 0
+    assert len(stub.sent("find")) == 1 and len(stub.sent("check")) == 1
+    asked = "\n".join(m["content"] for r in stub.requests for m in r["messages"])
+    assert "secretvariant-2" not in asked
+    assert not (results_folder(settings) / "trials/secretvariant-2/verdicts").exists()
+
+
 def test_another_judge_merges_when_the_merge_judge_fails(experiment, fake, cli, stub):
     judges = [api_judge("one", model="openai/gpt-a"), api_judge("two", model="openai/gpt-b")]
     stub.fail = lambda model, kind: (

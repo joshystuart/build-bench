@@ -121,7 +121,10 @@ def _problems(data: dict) -> list[Problem]:
         why = f"Failed: {f['reason'] or 'no reason was recorded'}"
         out.append(_problem(f["trial"], "failed", why, f["final_message"]))
     for f in data["empty_trials"]:
-        why = "Finished but left no code changes. Its numbers are in the averages."
+        why = (
+            "Finished but left no code changes, so it counts as not built: no Judge was "
+            "asked about it, and only its cost and time are in the averages."
+        )
         out.append(_problem(f["trial"], "changed nothing", why, f["final_message"]))
     return out
 

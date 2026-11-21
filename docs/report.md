@@ -5,13 +5,18 @@ folder alone. It starts no agent and calls no model.
 
 ## The tables
 
-One line per Variant unless noted.
+One line per Variant unless noted. A Trial is **built** when it finished and
+left code changes. One that finished but changed nothing counts as not built:
+no Judge is asked about it (they would only bill for saying it does nothing),
+its checks read "– (no changes)" and do not count as passed, and it is left out
+of the Output and Defect averages. Its cost and time stay in the Build
+averages, because they were spent.
 
-- **Build** and **Output:** the average over finished Trials, with the lowest
-  and highest. Build has active time and wall time side by side (see
-  [trials.md](trials.md#measurements)), and the most subagents that ran at
-  once.
-- **Quality:** how many Trials finished and how many passed the checks, both
+- **Build** and **Output:** the average over finished Trials (Build) or built
+  Trials (Output), with the lowest and highest. Build has active time and wall
+  time side by side (see [trials.md](trials.md#measurements)), and the most
+  subagents that ran at once.
+- **Quality:** how many Trials were built and how many passed the checks, both
   out of every Trial, so a Trial that failed counts against its Variant. With
   several named Checks, the Trials that passed each one (`lint 3/3 · ui 1/3`).
   Then the Defects one Trial has, by severity, and the nits one Judge listed.

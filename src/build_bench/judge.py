@@ -96,6 +96,11 @@ def judge(
             for t, m in zip(trials, measured, strict=True)
             if t.finished and m is not None and not m.get("error")
         ]
+        # Judges would only bill for saying a build that changed nothing does nothing.
+        for t in ready:
+            if t.changed_nothing:
+                board.say(f"[skip]  {t.id}: the build changed nothing, so no Judge is asked")
+        ready = [t for t in ready if not t.changed_nothing]
         found = find(settings, folder, ready, board, agent)
         merged = merge(settings, folder, ready, board, agent)
         checked = check(settings, folder, ready, board, agent)

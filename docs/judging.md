@@ -19,6 +19,9 @@ is wrong, and `judge` works in steps. Each step skips what is already saved.
 4. **Compare** (only for a Judge with `compare` set). The Judge is shown two
    Trials of different Variants and says which it would rather ship.
 
+A Trial that finished but changed nothing is measured (its cost and time
+count) but no Judge is asked about it.
+
 ## How severe a Defect is
 
 A Defect starts as severe as its worst Finding. That lets one generous Judge

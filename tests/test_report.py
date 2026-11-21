@@ -579,10 +579,24 @@ def test_the_report_says_why_a_trial_went_wrong(experiment, cli, no_models):
     ) in md
     assert (
         "## Trials that changed nothing\n\n"
-        "These Trials finished but left no code changes. Their numbers are in the averages.\n\n"
+        "These Trials finished but left no code changes, so they count as not built: no Judge "
+        "was asked about them, their checks are not counted, and only their cost and time are "
+        "in the averages.\n\n"
         "- alpha-1: “I stopped the build before it started. The repository has no git remote.”"
     ) in md
     assert "alpha-3" not in md.split("## Trials that changed nothing")[1]
+
+    # It counts as not built, and as not passing the checks it passed, but its cost and
+    # time were spent all the same.
+    data = json.loads((folder / "report.json").read_text())
+    [variant] = data["variants"]
+    assert (variant["finished"], variant["built"]) == (2, 1)
+    assert variant["build"]["cost_usd"]["n"] == 2
+    assert variant["output"]["prod_added"]["n"] == 1
+    assert variant["quality"]["checks"] == {"passed": 1, "ran": 1, "trials": 3}
+    empty = next(r for r in data["trials"] if r["trial"] == "alpha-1")
+    assert empty["checks"] == {"checks": "– (no changes)"} and empty["checks_passed"] is None
+    assert "| alpha | 1/3 | 1/3 |" in md
 
     page = (folder / "report.html").read_text()
     problems = page.split("<h2>What went wrong</h2>")[1].split("</ul>")[0]
