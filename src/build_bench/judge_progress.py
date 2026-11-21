@@ -218,12 +218,13 @@ class Board:
         if not done:
             return "time left in this step: unknown until an ask finishes"
         typical = statistics.median(done)
+        left = [a for a in asks if a.state in ("waiting", "running")]
         seconds = sum(
             typical if a.state == "waiting" else max(typical - (now - (a.started or now)), 0)
-            for a in asks
-            if a.state in ("waiting", "running")
+            for a in left
         )
         concurrency = 1 if self.name in ("measure", "merge") else self.settings.concurrency
+        concurrency = max(min(concurrency, len(left)), 1)
         return (
             f"time left in this step: ~{clock(seconds / concurrency)} "
             f"(from {len(done)} finished ask(s))"
