@@ -240,6 +240,17 @@ Verdicts (a Judge's own `prompt` replaces it), `merge.md`, `check.md` and
 `compare.md`. Changing `judge_guidance` counts as a change to every one of
 them.
 
+When the merge fails, the next Judge in the settings tries it, then the one
+after, until one merges. Each failed try is kept in `defects.json` under
+`failed_tries` and counted as a failure of its own Judge. When every Judge
+fails, the report reads "n/a, merge failed" for every Defect count.
+
+An API Judge whose provider refuses it (no login, no permission, or no money
+left: HTTP 401, 402 or 403, or LiteLLM's budget error) would get the same
+answer every time, so after the first refusal `judge` asks it nothing more,
+says so once with `[judge stopped]`, and leaves its other asks unsaved. Once
+the cause is fixed, the next `judge` asks it for them.
+
 ## What runs again
 
 `judge` keeps what it saved and redoes only what has gone out of date:

@@ -47,6 +47,8 @@ class Stub:
         #: The cost the provider itself reports with each reply, as OpenRouter does.
         self.reported_cost = None
         self.sleep = sleep
+        #: A function of (model, kind) giving the error a request raises, or None.
+        self.fail = lambda model, kind: None
         self.requests = []
         self.active = 0
         self.most_active = 0
@@ -62,6 +64,9 @@ class Stub:
             self.most_active = max(self.most_active, self.active)
         try:
             time.sleep(self.sleep)
+            error = self.fail(request["model"], kind)
+            if error is not None:
+                raise error
             if kind == "merge":
                 reply = self.merge_reply or replies.merge_reply(text)
             elif kind == "check":
@@ -458,6 +463,71 @@ def test_a_bad_merge_fails_and_is_tried_again(experiment, fake, cli, stub, reply
     assert cli("judge", settings)[0] == 0
     assert len(stub.sent("find")) == 0 and len(stub.sent("merge")) == 1
     assert len(stub.sent("check")) == 2
+
+
+def test_another_judge_merges_when_the_merge_judge_fails(experiment, fake, cli, stub):
+    judges = [api_judge("one", model="openai/gpt-a"), api_judge("two", model="openai/gpt-b")]
+    stub.fail = lambda model, kind: (
+        RuntimeError("merge broke") if (model, kind) == ("openai/gpt-a", "merge") else None
+    )
+    settings = built(experiment, cli, judges=judges)
+    code, out, _ = cli("judge", settings)
+    assert code == 0, out
+    assert "[merge failed] by one: RuntimeError: merge broke" in out
+    assert out.index("[merge failed] by one") < out.index("[merge] trying again with two")
+    assert "[merged] 4 finding(s) into 1 defect(s) by two" in out
+    merged = saved(settings, "defects.json")
+    assert (merged["status"], merged["judge"]) == ("ok", "two")
+    assert [(t["judge"], t["reason"]) for t in merged["failed_tries"]] == [
+        ("one", "RuntimeError: merge broke")
+    ]
+
+    assert cli("report", settings)[0] == 0
+    data = saved(settings, "report.json")
+    assert data["merge_failed"] is None
+    assert [j["failed"] for j in data["judges"]] == [1, 0]
+    assert {
+        "trial": None,
+        "judge": "one",
+        "step": "merge",
+        "reason": "RuntimeError: merge broke",
+    } in (data["failed_judging"])
+
+
+def denied(model: str) -> litellm.PermissionDeniedError:
+    import httpx
+
+    response = httpx.Response(403, request=httpx.Request("POST", "https://example.com"))
+    return litellm.PermissionDeniedError(
+        message="forbidden", llm_provider="openai", model=model, response=response
+    )
+
+
+def test_a_judge_refused_permission_is_asked_nothing_more(experiment, fake, cli, stub):
+    judges = [api_judge("one", model="openai/gpt-a"), api_judge("two", model="openai/gpt-b")]
+    stub.fail = lambda model, kind: denied(model) if model == "openai/gpt-a" else None
+    settings = built(experiment, cli, judges=judges)
+    code, out, _ = cli("judge", settings)
+    assert code == 1
+    # Asked once, stopped once, said once; the other Judge does all the rest.
+    assert [r["model"] for r in stub.requests].count("openai/gpt-a") == 1
+    stopped = [line for line in out.splitlines() if line.startswith("[judge stopped]")]
+    assert stopped == [
+        "[judge stopped] one: PermissionDeniedError: litellm.PermissionDeniedError: forbidden. "
+        "No more asks go to one in this `build-bench judge`; fix the cause and run it again."
+    ]
+    assert out.count("failed] ") == 1
+    assert "[merged] 2 finding(s) into 1 defect(s) by two" in out
+    assert len(stub.sent("check")) == 2
+    first = verdict(settings, "secretvariant-1", "one")
+    assert first["status"] == "failed" and first["stops_judge"] is True
+    assert not (results_folder(settings) / "trials/secretvariant-2/verdicts/one.json").exists()
+
+    # Once the cause is fixed, the next `judge` asks it for what it missed.
+    stub.fail = lambda model, kind: None
+    stub.requests.clear()
+    assert cli("judge", settings)[0] == 0
+    assert len(stub.sent("find")) == 2
 
 
 def test_the_settings_can_name_the_judge_that_merges(experiment, fake, cli, stub):

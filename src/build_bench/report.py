@@ -494,11 +494,14 @@ def build_report(settings: Settings, folder: Path) -> dict:
         )
 
     compared, comparison_rows = _comparisons(folder, variants, rows, judges)
+    # Merges that failed before another Judge tried.
+    tries = (merged or {}).get("failed_tries") or []
     judge_rows = []
     for j in judges:
         verdicts = [r["verdicts"][j] for r in rows if j in r["verdicts"]]
         checks = [r["defect_checks"][j] for r in rows if j in r["defect_checks"]]
         merges = [_judging(merged)] if merged and merged.get("judge") == j else []
+        merges += [_judging({**t, "status": "failed"}) for t in tries if t.get("judge") == j]
         pairs = [_judging(c) for c in compared if c["judge"] == j]
         every = verdicts + checks + merges + pairs
         costs = [v["cost_usd"] for v in every if v["cost_usd"] is not None]
@@ -535,15 +538,10 @@ def build_report(settings: Settings, folder: Path) -> dict:
         for c in compared
         if c.get("status") != "ok"
     ]
-    if merged and merged.get("status") != "ok":
-        failed_judging.append(
-            {
-                "trial": None,
-                "judge": merged.get("judge"),
-                "step": "merge",
-                "reason": merged["reason"],
-            }
-        )
+    failed_judging += [
+        {"trial": None, "judge": t.get("judge"), "step": "merge", "reason": t.get("reason")}
+        for t in tries + ([merged] if merge_failed else [])
+    ]
 
     models = [v.model for v in settings.variants] + [j.model for j in settings.judges]
     versions = {
