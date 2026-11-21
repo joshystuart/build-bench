@@ -111,7 +111,7 @@ def _judge(settings, args, folder: Path | None = None) -> int:
     _need_env(settings, judges=True)
     folder = folder or pick_folder(settings, args.results)
     print(f"Results: {folder}")
-    return OK if judge(settings, folder) else FAILED
+    return OK if judge(settings, folder, live=sys.stdout.isatty()) else FAILED
 
 
 def _report(settings, args, folder: Path | None = None) -> int:

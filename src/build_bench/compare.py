@@ -35,6 +35,7 @@ from .judge import (
     trial_parts,
     where_things_are,
 )
+from .judge_progress import Ask, Board, ask_of
 from .results import Trial, read_json
 from .run import in_parallel
 from .settings import Judge, Settings
@@ -80,7 +81,9 @@ def target(folder: Path, j: Judge, first: Trial, second: Trial) -> Path:
     return folder / "comparisons" / j.name / f"{one}__{two}.json"
 
 
-def compare(settings: Settings, folder: Path, trials: list[Trial], say, agent: Agents) -> bool:
+def compare(
+    settings: Settings, folder: Path, trials: list[Trial], board: Board, agent: Agents
+) -> bool:
     """Ask each Judge with `compare` set about each of its pairs not yet compared."""
     instructions = shipped_prompt("compare")
     sha = _sha(instructions)
@@ -95,10 +98,29 @@ def compare(settings: Settings, folder: Path, trials: list[Trial], say, agent: A
         saved = read_json(target(folder, *task)) or {}
         return saved.get("status") == "ok" and saved.get("prompt_sha") == sha
 
+    if not wanted:
+        if any(j.compare is not None for j in settings.judges):
+            board.step("compare", [], "no two Trials of different Variants to compare")
+        return True
+
+    def ask_for(task: tuple[Judge, Trial, Trial]) -> Ask:
+        j, first, second = task
+        label = f"{first.id} with {second.id} by {j.name}"
+        return ask_of(label, j, target(folder, *task).with_suffix(""))
+
+    todo = [(*task, ask_for(task)) for task in wanted if not done(task)]
+    judges = len({j.name for j, *_ in wanted})
+    line = (
+        f"{len(todo)} of {len(wanted)} pair(s) to compare by {judges} Judge(s), "
+        f"{settings.concurrency} at a time"
+        if todo
+        else f"all {len(wanted)} pair(s) already compared"
+    )
+    board.step("compare", [ask for *_, ask in todo], line)
     lock = threading.Lock()
 
-    def one(task: tuple[Judge, Trial, Trial]) -> None:
-        j, first, second = task
+    def one(task: tuple[Judge, Trial, Trial, Ask]) -> None:
+        j, first, second, ask = task
         path = target(folder, j, first, second)
         path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -115,28 +137,32 @@ def compare(settings: Settings, folder: Path, trials: list[Trial], say, agent: A
 
         saved = read_json(path) or {}
         kept = saved if saved.get("prompt_sha") == sha else {}
-        record = _attempt(
-            _record(
-                j,
-                first=first.id,
-                second=second.id,
-                prompt_sha=sha,
-                cost_usd=kept.get("cost_usd"),
-                seconds=kept.get("seconds"),
-                better=None,
-                why="",
+        record = board.asking(
+            ask,
+            lambda: _attempt(
+                _record(
+                    j,
+                    first=first.id,
+                    second=second.id,
+                    prompt_sha=sha,
+                    cost_usd=kept.get("cost_usd"),
+                    seconds=kept.get("seconds"),
+                    better=None,
+                    why="",
+                ),
+                path,
+                lambda: _ask(settings, folder, j, first, second, instructions, path, agent),
+                parse,
             ),
-            path,
-            lambda: _ask(settings, folder, j, first, second, instructions, path, agent),
-            parse,
         )
         with lock:
+            pair = f"{first.id} with {second.id} by {j.name}"
             if record["status"] == "ok":
-                say(f"[compared] {first.id} with {second.id} by {j.name}")
+                board.say(f"[compared] {pair}")
             else:
-                say(f"[compare failed] {first.id} with {second.id} by {j.name}: {record['reason']}")
+                board.say(f"[compare failed] {pair}: {record['reason']}")
 
-    in_parallel(one, [t for t in wanted if not done(t)], settings.concurrency, agent, say)
+    in_parallel(one, todo, settings.concurrency, agent, board.say)
     return all(done(task) for task in wanted)
 
 
