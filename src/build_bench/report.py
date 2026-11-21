@@ -13,14 +13,17 @@ from typing import Any
 from .judge import CATEGORIES, MERGED, PRESENT, SEVERITIES
 from .results import read_json, saved_trials, write_json
 from .settings import Settings
+from .transcript import IDLE_SECONDS
 
 #: (key, label, decimals) for each per-Trial number, in table order.
 BUILD = [
     ("cost_usd", "Cost ($)", 4),
     ("tokens_total", "Tokens", 0),
-    ("total_minutes", "Time (min)", 2),
+    ("active_minutes", "Active time (min)", 2),
+    ("total_minutes", "Wall time (min)", 2),
     ("wait_minutes", "Waiting on subagents (min)", 2),
     ("subagents", "Subagents", 0),
+    ("subagents_at_once", "Most subagents at once", 0),
 ]
 OUTPUT = [
     ("prod_added", "Prod lines +", 0),
@@ -32,7 +35,7 @@ OUTPUT = [
 COMPARED = [
     ("defects", "Behaviour defects per Trial", 2),
     ("cost_usd", "Cost ($)", 4),
-    ("total_minutes", "Time (min)", 2),
+    ("active_minutes", "Active time (min)", 2),
 ]
 #: A difference is clear when chance alone gives one as large less than 1 time
 #: in 20, and possible when less than 1 time in 5.
@@ -137,14 +140,19 @@ def trial_row(
         "agent": status.get("agent", "claude"),
         # Trials saved before Copilot was an agent hold only `claude_version`.
         "agent_version": status.get("agent_version") or status.get("claude_version"),
-        "max_active": timings.get("max_active"),
+        # How many Trials, this one included, were building at one moment.
+        "trials_at_once": timings.get("max_active"),
         "measured": bool(m),
         "cost_usd": m.get("cost_usd"),
         "cost_basis": m.get("cost_basis"),
         "tokens_total": (m.get("tokens") or {}).get("total"),
+        "active_minutes": m["active_seconds"] / 60 if "active_seconds" in m else None,
         "total_minutes": m["total_seconds"] / 60 if "total_seconds" in m else None,
+        "idle_minutes": m["idle_seconds"] / 60 if "idle_seconds" in m else None,
+        "ends_idle": bool(m.get("ends_idle")),
         "wait_minutes": m["wait_seconds"] / 60 if "wait_seconds" in m else None,
         "subagents": len(m["subagents"]) if "subagents" in m else None,
+        "subagents_at_once": m.get("most_subagents_at_once"),
         "prod_added": line_counts.get("prod_added"),
         "prod_removed": line_counts.get("prod_removed"),
         "test_added": line_counts.get("test_added"),
@@ -250,6 +258,7 @@ def _timeline(m: dict) -> dict | None:
         "total_seconds": m["total_seconds"],
         "main_cost_usd": main.get("cost_usd"),
         "waits": m.get("wait_intervals", []),
+        "idle": m.get("idle_intervals", []),
         "subagents": [
             {"name": s["name"], "start": s["start"], "end": s["end"], "cost_usd": s.get("cost_usd")}
             for s in m.get("subagents", [])
@@ -572,9 +581,19 @@ def build_report(settings: Settings, folder: Path) -> dict:
         "copilot_versions": versions["copilot"],
         "flags": {
             "ran_alongside_others": [
-                {"trial": r["trial"], "max_active": r["max_active"]}
+                {"trial": r["trial"], "trials_at_once": r["trials_at_once"]}
                 for r in rows
-                if (r["max_active"] or 1) > 1
+                if (r["trials_at_once"] or 1) > 1
+            ],
+            # Trials whose main agent waited idle, with no subagent running.
+            "waited_idle": [
+                {
+                    "trial": r["trial"],
+                    "idle_minutes": _round(r["idle_minutes"], 1),
+                    "at_the_end": r["ends_idle"],
+                }
+                for r in rows
+                if r["status"] == "finished" and r["idle_minutes"]
             ],
             "mixed_claude_versions": len(versions["claude"]) > 1,
             "mixed_copilot_versions": len(versions["copilot"]) > 1,
@@ -724,7 +743,10 @@ def tables(data: dict) -> list[Table]:
             labels + [label for _, label, _ in BUILD],
             _summary(variants, "build", BUILD),
             "Each cell is the average over finished Trials, with the lowest and highest in "
-            "brackets. Failed Trials are left out of the averages.",
+            "brackets. Failed Trials are left out of the averages. Active time is wall time "
+            f"less the waits of {IDLE_SECONDS / 60:g} minutes or more when the main agent sat "
+            "idle with no subagent running. Most subagents at once counts the subagents "
+            "running at one moment.",
         ),
         Table(
             "Output",
@@ -923,10 +945,23 @@ def flag_lines(data: dict) -> list[str]:
         out.append("- Login: **API key**.")
     alongside = data["flags"]["ran_alongside_others"]
     if alongside:
-        names = ", ".join(f"{a['trial']} ({a['max_active']} at once)" for a in alongside)
+        names = ", ".join(f"{a['trial']} ({a['trials_at_once']} at once)" for a in alongside)
         out.append(
             f"- **Ran alongside other Trials:** {names}. Time comparisons between Trials "
             "that ran at once are weaker than cost and quality comparisons."
+        )
+    idle = data["flags"]["waited_idle"]
+    if idle:
+        names = ", ".join(
+            f"{w['trial']} ({num(w['idle_minutes'])} min"
+            + (", at the end)" if w["at_the_end"] else ")")
+            for w in idle
+        )
+        out.append(
+            f"- **Waited idle:** {names}. The main agent had ended its turn with no subagent "
+            "running, waiting for a wakeup, a timer or a background command. Active time "
+            f"leaves out each such wait of {IDLE_SECONDS / 60:g} minutes or more; wall time "
+            "keeps it."
         )
     for kind, name in AGENT_NAMES.items():
         versions = data[f"{kind}_versions"]

@@ -185,7 +185,7 @@ def test_only_behaviour_defects_are_weighed(experiment, cli, no_models):  # noqa
     [difference] = data["differences"]
     assert difference["measures"]["defects"]["lower"] is None
     md = (folder / "report.md").read_text()
-    assert "| Variants | Behaviour defects per Trial | Cost ($) | Time (min) |" in md
+    assert "| Variants | Behaviour defects per Trial | Cost ($) | Active time (min) |" in md
     assert "| v1 and v2 | the same |" in md
     assert "| v1 | 4/4 | 1 | 1 | 0 |" in md and "| v2 | 4/4 | 1 | 0 | 0 |" in md
 

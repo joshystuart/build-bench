@@ -132,7 +132,7 @@ def test_a_copilot_trial_is_measured_and_reported_beside_a_claude_one(experiment
     assert measured["cost_usd"] == pytest.approx(0.1300258)
     assert len(measured["subagents"]) == 1
     md = (folder / "report.md").read_text()
-    assert "| pilot | 1/1 | 0.13 | 164378 | 0.29 | 0.16 | 1 |" in md
+    assert "| pilot | 1/1 | 0.13 | 164378 | 0.29 | 0.29 | 0.16 | 1 | 1 |" in md
     assert "- Claude Code version: 2.1.319." in md
     assert "- Copilot CLI version: 1.0.112." in md
     assert "**Costs are on two bases.**" in md

@@ -189,21 +189,26 @@ def _timeline(rows: list[dict]) -> Timeline:
         subs = t["subagents"]
         note = f"{_clock(t['total_seconds'])} · {len(subs)} subagent{'s' * (len(subs) != 1)}"
         bad = bool(r.get("changed_nothing"))
+        if r.get("idle_minutes"):
+            note += f" · idle {_clock(r['idle_minutes'] * 60)}"
         if bad:
             note += " · changed nothing"
         group = TrialGroup(r["trial"], note, bad, y)
         groups.append(group)
         y += group_h
 
-        total, waits = t["total_seconds"], t["waits"]
+        total, waits, idle = t["total_seconds"], t["waits"], t.get("idle", [])
         waited = total - sum(e - s for s, e in _working(total, waits))
+        idled = sum(e - s for s, e in idle)
         tip = [f"{_clock(total)} in all", f"Main agent · {r['trial']}"]
         if subs:
             share = round(100 * waited / total) if total else 0
             tip.append(
-                f"Working {_clock(total - waited)} · waiting on subagents "
+                f"Working {_clock(total - waited - idled)} · waiting on subagents "
                 f"{_clock(waited)} ({share}%)"
             )
+        if idle:
+            tip.append(f"Idle, nothing running {_clock(idled)}")
         tip.append(f"Cost {_money(t.get('main_cost_usd'))}")
         main = agent(
             "Main agent",
@@ -211,7 +216,8 @@ def _timeline(rows: list[dict]) -> Timeline:
             x(0),
             x(total),
             y,
-            [bar("main", x(s), x(e), y) for s, e in _working(total, waits)],
+            # Idle waits are left blank: nothing was running.
+            [bar("main", x(s), x(e), y) for s, e in _working(total, waits + idle)],
         )
         main.waits = [
             Wait(x(s) + 2, max(x(e) - 2, x(s) + 2), y + row_h / 2)
@@ -235,6 +241,7 @@ def _timeline(rows: list[dict]) -> Timeline:
             table.append(TimeRow(r["trial"], s["name"], s["start"], s["end"], s.get("cost_usd")))
         waiting = "Main agent waiting on subagents"
         table += [TimeRow(r["trial"], waiting, s, e, None) for s, e in waits]
+        table += [TimeRow(r["trial"], "Main agent idle", s, e, None) for s, e in idle]
 
     bottom = y + 4
     ticks = []

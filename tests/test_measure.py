@@ -69,6 +69,25 @@ def test_waiting_on_a_background_subagent():
     assert m["wait_seconds"] == pytest.approx(2.51)
 
 
+def test_a_long_idle_wait_is_left_out_of_active_time():
+    m = measure(FIXTURES / "wakeup", default_prices())
+    assert m["total_seconds"] == pytest.approx(1090.0)
+    # The two-minute wait counts as active; the fifteen-minute one does not.
+    assert m["idle_intervals"] == [[180.0, 1080.0]]
+    assert m["idle_seconds"] == pytest.approx(900.0)
+    assert m["active_seconds"] == pytest.approx(190.0)
+    assert m["ends_idle"] is True
+    assert m["most_subagents_at_once"] == 0
+
+
+def test_waiting_on_subagents_is_not_idle():
+    two = measure(FIXTURES / "subagents", default_prices())
+    assert (two["idle_seconds"], two["most_subagents_at_once"]) == (0, 2)
+    background = measure(FIXTURES / "background", default_prices())
+    assert background["idle_seconds"] == 0 and background["ends_idle"] is False
+    assert background["active_seconds"] == background["total_seconds"]
+
+
 def test_tool_time_is_grouped_by_first_word_and_tool_name():
     m = measure(FIXTURES / "toolchains", default_prices())
     assert m["tool_seconds"] == {
@@ -133,3 +152,22 @@ def test_a_failed_trial_is_skipped_and_a_measured_one_is_not_measured_again(expe
     assert "[measured]" not in out
     assert target.stat().st_mtime_ns == before
     assert not (folder / "trials/v-2/measurements.json").exists()
+
+
+def test_a_measurement_from_before_active_time_is_read_again(experiment, fake, cli):
+    settings = experiment()
+    assert cli("run", settings)[0] == 0
+    assert cli("judge", settings)[0] == 0
+    target = results_folder(settings) / "trials/alpha-1/measurements.json"
+    old = json.loads(target.read_text())
+    for key in ("active_seconds", "idle_seconds", "transcript_version"):
+        del old[key]
+    target.write_text(json.dumps(old))
+
+    code, out, _ = cli("judge", settings)
+    assert code == 0
+    assert "[measured again] alpha-1: its transcript, for measurements added since" in out
+    again = json.loads(target.read_text())
+    assert again["active_seconds"] == pytest.approx(14.182)
+    assert again["checks"] == old["checks"]  # nothing else is redone
+    assert "[measured again]" not in cli("judge", settings)[1]

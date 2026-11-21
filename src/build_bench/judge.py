@@ -186,6 +186,13 @@ def measure_trial(settings: Settings, folder: Path, trial: Trial, say=print) -> 
         return None
     if target.exists():
         saved = read_json(target)
+        prices = {**transcript.default_prices(), **settings.prices}
+        if saved.get("transcript_version") != transcript.VERSION and "total_seconds" in saved:
+            # Measured before the transcript gave all it gives now: reading it
+            # again is quick and asks no one.
+            saved.update(transcript.measure(trial.folder / "transcript", prices))
+            write_json(target, saved)
+            say(f"[measured again] {trial.id}: its transcript, for measurements added since")
         if saved.get("error"):
             say(f"[measure failed] {trial.id}: {saved['error']}")
         elif trial.workspace.is_dir() and (

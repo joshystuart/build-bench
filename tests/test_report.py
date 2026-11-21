@@ -27,6 +27,7 @@ def trial(
     tokens=1000,
     seconds=600.0,
     wait=0.0,
+    idle=(),
     subagents=(),
     lines=(10, 2, 5, 0),
     checks=True,
@@ -59,6 +60,11 @@ def trial(
             "cost_usd": cost,
             "tokens": {"total": tokens},
             "total_seconds": seconds,
+            "active_seconds": seconds - sum(e - s for s, e in idle),
+            "idle_seconds": sum(e - s for s, e in idle),
+            "idle_intervals": [list(i) for i in idle],
+            "ends_idle": bool(idle) and seconds - idle[-1][1] < 300,
+            "most_subagents_at_once": min(len(subagents), 1),
             "wait_seconds": wait,
             "wait_intervals": [[s, e] for _, s, e in subagents],
             "subagents": [{"name": n, "start": s, "end": e} for n, s, e in subagents],
@@ -158,6 +164,8 @@ def saved(experiment):
         cost=3.0,
         tokens=3000,
         seconds=1200,
+        # Waited idle for a wakeup at the end, long after its work was done.
+        idle=[(800.0, 1150.0)],
         lines=(20, 4, 15, 0),
         checks=False,
         active=2,
@@ -242,7 +250,11 @@ def test_averages_ranges_and_counts(saved, cli, no_models):
     assert v2["build"]["cost_usd"]["n"] == 2
 
     md = (folder / "report.md").read_text()
-    assert "| v1 | 2/3 | 2 (1–3) | 2000 (1000–3000) | 15 (10–20) | 0.5 (0–1) |" in md
+    assert (
+        "| v1 | 2/3 | 2 (1–3) | 2000 (1000–3000) | 12.09 (10–14.17) | 15 (10–20) | 0.5 (0–1) |"
+        in md
+    )
+    assert v1["build"]["active_minutes"]["mean"] == 12.09
     assert "| v2 | 2/2 | 3 (2–4) |" in md
 
 
@@ -317,7 +329,7 @@ def test_a_difference_is_weighed_against_the_spread_between_trials(saved, cli, n
     assert difference["measures"]["defects"]["lower"] == "v2"
     assert difference["measures"]["defects"]["by"] == 1.0
     # Every Trial took the same time.
-    assert difference["measures"]["total_minutes"]["lower"] is None
+    assert difference["measures"]["active_minutes"]["lower"] is None
     md = (folder / "report.md").read_text()
     assert "| v1 and v2 | v2 lower by 1: clear | v1 lower by 1: clear | the same |" in md
 
@@ -630,6 +642,7 @@ def test_flags(saved, cli, no_models):
     md = (folder / "report.md").read_text()
     assert "Login: **subscription**" in md
     assert "**Ran alongside other Trials:** v1-2 (2 at once)" in md
+    assert "**Waited idle:** v1-2 (5.8 min, at the end). The main agent had ended its turn" in md
     assert "**Mixed Claude Code versions:** 2.1.319, 2.1.320" in md
 
 

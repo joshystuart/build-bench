@@ -8,7 +8,9 @@ folder alone. It starts no agent and calls no model.
 One line per Variant unless noted.
 
 - **Build** and **Output:** the average over finished Trials, with the lowest
-  and highest.
+  and highest. Build has active time and wall time side by side (see
+  [trials.md](trials.md#measurements)), and the most subagents that ran at
+  once.
 - **Quality:** how many Trials finished and how many passed the checks, both
   out of every Trial, so a Trial that failed counts against its Variant. With
   several named Checks, the Trials that passed each one (`lint 3/3 · ui 1/3`).
@@ -56,7 +58,9 @@ judging again. When merging the Findings into Defects failed, no Defect count
 is known: the Defect columns and the Differences table's Defect column read
 "n/a, merge failed", the Defect tables are left out, and the report says so
 first. The report flags Trials that ran alongside
-others (time comparisons between them are weaker), an Experiment whose Trials
+others (time comparisons between them are weaker; `trials_at_once` in
+`report.json` counts the Trials building at one moment, not subagents),
+Trials whose main agent waited idle (and whether that was at the end), an Experiment whose Trials
 used different agent versions, Judges that all share the builders' model
 family, checks that no Trial passed (with whether `run` saw them pass on the
 base commit), regressions (a Check that passed on the base commit and failed
@@ -71,7 +75,7 @@ offline, and has a "Show as table" alternative for every chart.
 
 Two Trials of the same Variant never come out the same, so a gap between two
 Variants' averages may be nothing but that spread. The Differences table
-weighs each gap against it, for behaviour Defects per Trial, cost and time.
+weighs each gap against it, for behaviour Defects per Trial, cost and active time.
 Test-gap and scope Defects are counted in their own table and not weighed.
 Defects merged before categories existed show as uncategorised and are
 weighed, as they were then.
