@@ -377,7 +377,9 @@ def _agreement(rows: list[dict], judges: list[str]) -> list[dict]:
     found = []
     for r in rows:
         counts = {j: r["findings"][j] for j in judges if j in r["findings"]}
-        if len(counts) < 2:
+        # A Verdict on a build that changed nothing, saved before such builds were
+        # skipped, says nothing about how good a build is.
+        if len(counts) < 2 or not r["built"]:
             continue
         spread = {
             s: max(c[s] for c in counts.values()) - min(c[s] for c in counts.values())

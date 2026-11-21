@@ -624,8 +624,9 @@ def test_how_far_the_judges_agree_is_shown_per_trial(experiment, cli, no_models)
             "gemini": ok("major", "minor"),
         },
     )
-    # One Verdict is not a disagreement.
+    # One Verdict is not a disagreement, and a build that changed nothing has nothing to judge.
     trial(folder, "alpha-2", verdicts={"gpt": ok("critical")})
+    trial(folder, "alpha-3", diff="", verdicts={"gpt": ok("major"), "gemini": ok()})
     assert cli("report", settings)[0] == 0
     data = json.loads((folder / "report.json").read_text())
     assert data["agreement"] == [
