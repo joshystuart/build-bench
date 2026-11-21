@@ -10,6 +10,7 @@ Control keys (all optional):
     judge_reply   the text a judge replies with when asked for a Verdict
     merge_reply   the text a judge replies with when asked to merge Findings
     check_present yes | no | unsure: what a judge answers for every Defect
+    check_in_base yes | no | unsure: whether every Defect present was in the base
     compare_better 1 | 2 | same: which build a judge prefers in every Comparison
     judge_mode    mode for judge runs
     merge_mode    mode for merge runs (default: judge_mode)
@@ -79,6 +80,8 @@ def main() -> int:
                 "CLAUDECODE",
                 "CLAUDE_CODE_SESSION_ID",
                 "CLAUDE_EFFORT",
+                "BENCH_PROBE",
+                "PATH",
             )
         },
         "config_files": sorted(p.name for p in config.iterdir()) if config.is_dir() else None,
@@ -147,7 +150,9 @@ def main() -> int:
         elif kind == "merge":
             reply = control.get("merge_reply", replies.merge_reply(prompt))
         elif kind == "check":
-            reply = replies.check_reply(prompt, control.get("check_present", "yes"))
+            reply = replies.check_reply(
+                prompt, control.get("check_present", "yes"), control.get("check_in_base", "no")
+            )
         elif kind == "compare":
             reply = replies.compare_reply(control.get("compare_better", "1"))
         result = {

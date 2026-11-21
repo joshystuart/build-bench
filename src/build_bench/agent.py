@@ -61,9 +61,16 @@ class Headless:
     executable = ""
     name = ""
 
-    def __init__(self, executable: str | None = None, stopping: Stopping | None = None):
+    def __init__(
+        self,
+        executable: str | None = None,
+        stopping: Stopping | None = None,
+        env: dict[str, str] | None = None,
+    ):
         self.executable = executable or self.executable
         self._stop = stopping or Stopping()
+        #: The Experiment's own variables (`env` in the settings).
+        self.env = env or {}
 
     def stop(self, now: bool = False) -> None:
         """Start no more agents and stop the running ones: politely, or with `now`
@@ -75,7 +82,7 @@ class Headless:
         return self._stop.stopped
 
     def _path(self) -> str:
-        found = shutil.which(self.executable)
+        found = shutil.which(self.executable, path=self.base_environment().get("PATH"))
         if found is None:
             raise FileNotFoundError(f"{self.executable!r} is not on the PATH")
         return found
@@ -85,7 +92,7 @@ class Headless:
             [self._path(), "--version"],
             capture_output=True,
             text=True,
-            env=self.scrubbed(),
+            env=self.base_environment(),
             timeout=60,
         )
         found = re.search(r"\d+(?:\.\d+)+", out.stdout)
@@ -93,7 +100,13 @@ class Headless:
             raise RuntimeError(f"`{self.executable} --version` failed: {out.stderr.strip()}")
         return found.group()
 
-    def scrubbed(self) -> dict[str, str]:
+    def base_environment(self) -> dict[str, str]:
+        """This process's environment, scrubbed of anything that would tie the agent
+        to another session, with the Experiment's `env` on top. The config folder
+        and login are set after this, so `env` can never replace them."""
+        return {**self.scrubbed(dict(os.environ)), **self.env}
+
+    def scrubbed(self, env: dict[str, str]) -> dict[str, str]:
         raise NotImplementedError
 
     def command(self, request: AgentRequest) -> list[str]:
@@ -179,13 +192,13 @@ class ClaudeCode(Headless):
     executable = "claude"
     name = "Claude Code"
 
-    def scrubbed(self) -> dict[str, str]:
-        """This process's environment without anything that would tie the agent to the
-        session that started build-bench: nested-session markers, an inherited config
-        folder, effort or login."""
+    def scrubbed(self, env: dict[str, str]) -> dict[str, str]:
+        """`env` without anything that would tie the agent to the session that
+        started build-bench: nested-session markers, an inherited config folder,
+        effort or login."""
         return {
             k: v
-            for k, v in os.environ.items()
+            for k, v in env.items()
             if not k.startswith("CLAUDE") and k not in {"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"}
         }
 
@@ -210,7 +223,7 @@ class ClaudeCode(Headless):
         return cmd
 
     def environment(self, request: AgentRequest) -> dict[str, str]:
-        env = self.scrubbed()
+        env = self.base_environment()
         env["CLAUDE_CONFIG_DIR"] = str(request.config_dir)
         assert request.auth is not None
         name, value = request.auth
@@ -259,12 +272,12 @@ class Copilot(Headless):
     executable = "copilot"
     name = "Copilot CLI"
 
-    def scrubbed(self) -> dict[str, str]:
-        """This process's environment without Copilot settings that would follow the
-        agent in (its home folder, a default model, permissions), keeping its login."""
+    def scrubbed(self, env: dict[str, str]) -> dict[str, str]:
+        """`env` without Copilot settings that would follow the agent in (its home
+        folder, a default model, permissions), keeping its login."""
         return {
             k: v
-            for k, v in os.environ.items()
+            for k, v in env.items()
             if not k.startswith("COPILOT_") or k == "COPILOT_GITHUB_TOKEN"
         }
 
@@ -292,7 +305,7 @@ class Copilot(Headless):
         return cmd
 
     def environment(self, request: AgentRequest) -> dict[str, str]:
-        env = self.scrubbed()
+        env = self.base_environment()
         env["COPILOT_HOME"] = str(request.config_dir)
         return env
 
@@ -341,13 +354,13 @@ class Copilot(Headless):
 
 
 class Agents:
-    """Both agents behind one stop."""
+    """Both agents behind one stop, with the Experiment's `env`."""
 
-    def __init__(self) -> None:
+    def __init__(self, env: dict[str, str] | None = None) -> None:
         self._stop = Stopping()
         self.by_kind: dict[str, Headless] = {
-            "claude": ClaudeCode(stopping=self._stop),
-            "copilot": Copilot(stopping=self._stop),
+            "claude": ClaudeCode(stopping=self._stop, env=env),
+            "copilot": Copilot(stopping=self._stop, env=env),
         }
 
     def of(self, kind: str) -> Headless:

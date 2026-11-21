@@ -20,6 +20,11 @@ One build of one variant from the base commit. A variant with three repeats
 has three trials.
 _Avoid_: Run, attempt, session
 
+**Check**:
+One named command the project must pass, such as its linter or its UI tests.
+A trial gets a result for each check.
+_Avoid_: Test, gate. A defect check is something else.
+
 **Judge**:
 Something that reviews a trial: either an agent that can inspect the trial, or
 a single model call that reads the evidence it is sent.
@@ -39,9 +44,15 @@ One distinct problem in the experiment's builds, merged from every finding
 that describes it. Nits are never merged into defects.
 _Avoid_: Bug, issue, finding
 
+**Category**:
+What kind of problem a finding or defect is: behaviour (the code does the wrong
+thing), test-gap (the code is right but its tests would miss a regression) or
+scope (the build and the plan disagree about what to build).
+_Avoid_: Type, kind, class
+
 **Defect check**:
 One judge's answers, for one trial, to whether it has each defect and, when it
-does, how severe the defect is there.
+does, how severe the defect is there and whether the base commit already had it.
 _Avoid_: Confirmation, verification, vote
 
 **Comparison**:

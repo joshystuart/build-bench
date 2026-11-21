@@ -24,6 +24,7 @@ from .judge import (
     _ask_api,
     _attempt,
     _record,
+    _setup_log,
     _sha,
     _str,
     base_commit,
@@ -82,7 +83,7 @@ def target(folder: Path, j: Judge, first: Trial, second: Trial) -> Path:
 
 def compare(settings: Settings, folder: Path, trials: list[Trial], say, agent: Agents) -> bool:
     """Ask each Judge with `compare` set about each of its pairs not yet compared."""
-    instructions = shipped_prompt("compare")
+    instructions = shipped_prompt(settings, "compare")
     sha = _sha(instructions)
     wanted = [
         (j, first, second)
@@ -162,7 +163,8 @@ def _ask(
         work.mkdir()
         rebuilt = ""
         for n, trial in builds:
-            rebuilt = blind_copy(settings, folder, trial, work / f"build-{n}", base) or rebuilt
+            log = _setup_log(path.with_name(f"{path.stem}.build-{n}"))
+            rebuilt = blind_copy(settings, folder, trial, work / f"build-{n}", base, log) or rebuilt
         measured = "\n".join(f"# Build {n}\n\n{facts(trial)}" for n, trial in builds)
         prompt = (
             f"{instructions}\n\n---\n\n"

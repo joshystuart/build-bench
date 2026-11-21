@@ -10,13 +10,32 @@ One line per Variant unless noted.
 - **Build** and **Output:** the average over finished Trials, with the lowest
   and highest.
 - **Quality:** how many Trials finished and how many passed the checks, both
-  out of every Trial, so a Trial that failed counts against its Variant. Then
-  the Defects one Trial has, by severity, and the nits one Judge listed.
+  out of every Trial, so a Trial that failed counts against its Variant. With
+  several named Checks, the Trials that passed each one (`lint 3/3 · ui 1/3`).
+  Then the Defects one Trial has, by severity, and the nits one Judge listed.
+- **Checks:** with several named Checks, one line per Trial with each Check's
+  result: passed, failed, timed out, or – when it was not run. Results saved
+  before Checks had names count as one Check named `checks`.
 - **Differences:** one line per pair of Variants. See below.
+- **Defects by category:** the behaviour, test-gap and scope Defects one Trial
+  has, on average. Shown once any Defect has a category.
 - **Defects:** one line per Defect that some Trials have and others do not,
-  worst first, with the Trials of each Variant that have it. A Trial has a
+  behaviour first, then test gaps and scope, worst first in each, with the Trials of each Variant that have it. A Trial has a
   Defect when more of its Judges say it does than say it does not; an even
   split is shown as disputed.
+- **Found and checked only:** every Defect table shows, beside the Trials of a
+  Variant that have a Defect, how many of them a Judge found it in with its own
+  Verdict ("found") and how many have it only because a Judge answered yes when
+  asked about it in a Defect check ("checked only"). A Trial where one Judge
+  found it and another only checked counts as found. Checked only is weaker
+  evidence: the Judge was told what to look for. Both come from the Findings
+  saved on each Defect, so results judged earlier show them too.
+- **Defects already in the base commit:** Defects most of the Judges' answers
+  say the base commit already had (see [judging.md](judging.md#merging-and-the-base-commit)),
+  with the Trials of each Variant that have them. No Variant caused them, so
+  they are left out of every Variant's Defect counts and of the Differences
+  table. Defect checks saved before this question was asked count as not in
+  the base.
 - **Defects in every Trial:** the Defects every checked Trial has. They say
   nothing about which Variant is better, and usually point at a gap in the
   plan.
@@ -36,7 +55,11 @@ are listed with their reasons. The report flags Trials that ran alongside
 others (time comparisons between them are weaker), an Experiment whose Trials
 used different agent versions, Judges that all share the builders' model
 family, checks that no Trial passed (with whether `run` saw them pass on the
-base commit), and the login type. `report.json` holds every number, per Trial and
+base commit), regressions (a Check that passed on the base commit and failed
+in a Trial; listed first), and the login type. With `check_base: mark`, a Check
+that failed on the base commit reads "fails on base", in the Quality and
+Checks tables, and is left out of the pass counts, since no build could pass
+it. `report.json` holds every number, per Trial and
 per Variant. `report.html` adds a timeline per Trial on one time scale, works
 offline, and has a "Show as table" alternative for every chart.
 
@@ -44,7 +67,10 @@ offline, and has a "Show as table" alternative for every chart.
 
 Two Trials of the same Variant never come out the same, so a gap between two
 Variants' averages may be nothing but that spread. The Differences table
-weighs each gap against it, for Defects per Trial, cost and time.
+weighs each gap against it, for behaviour Defects per Trial, cost and time.
+Test-gap and scope Defects are counted in their own table and not weighed.
+Defects merged before categories existed show as uncategorised and are
+weighed, as they were then.
 
 Each cell names the Variant with the lower average and by how much, then one
 of three words:
@@ -84,7 +110,7 @@ compare anything. Whatever separates them is noise.
     status.json  prompt.md  stream.jsonl  stderr.log  summary.md
     transcript/main.jsonl  transcript/subagents/
     diff.patch  diff-full.patch  plan.diff  timings.json  pre_build.log
-    measurements.json  checks.log
+    measurements.json  checks.log  checks/<check>.log
     verdicts/<judge>.json  defect-checks/<judge>.json
   defects.json
   comparisons/<judge>/<trial>__<trial>.json

@@ -10,7 +10,7 @@ from pathlib import Path
 from statistics import mean
 from typing import Any
 
-from .judge import MERGED, SEVERITIES
+from .judge import CATEGORIES, MERGED, PRESENT, SEVERITIES
 from .results import read_json, saved_trials, write_json
 from .settings import Settings
 
@@ -30,7 +30,7 @@ OUTPUT = [
 ]
 #: What the Differences table compares between two Variants; lower is better in each.
 COMPARED = [
-    ("defects", "Defects per Trial", 2),
+    ("defects", "Behaviour defects per Trial", 2),
     ("cost_usd", "Cost ($)", 4),
     ("total_minutes", "Time (min)", 2),
 ]
@@ -40,6 +40,10 @@ CLEAR, POSSIBLE = 0.05, 0.2
 AGENT_NAMES = {"claude": "Claude Code", "copilot": "Copilot CLI"}
 #: Defects a Trial has, by severity, then the nits its Judges listed.
 QUALITY = [(s, f"{s.capitalize()} defects", 2) for s in MERGED] + [("nit", "Nits", 2)]
+#: The label for each category's column, in the order the report ranks them.
+CATEGORY_LABELS = {"behaviour": "Behaviour", "test-gap": "Test gaps", "scope": "Scope"}
+#: The category of a Defect merged before Defects had categories.
+UNCATEGORISED = "uncategorised"
 
 
 def _round(value: float | None, decimals: int) -> float | int | None:
@@ -111,7 +115,12 @@ def _judging(saved: dict) -> dict:
     return {key: saved.get(key) for key in ("status", "reason", "cost_usd", "seconds")}
 
 
-def trial_row(trial, judges: list[str], defects: list[dict] | None) -> dict[str, Any]:
+def trial_row(
+    trial,
+    judges: list[str],
+    defects: list[dict] | None,
+    fails_on_base: frozenset[str] | set[str] = frozenset(),
+) -> dict[str, Any]:
     status = trial.status or {}
     m = read_json(trial.folder / "measurements.json") or {}
     timings = read_json(trial.folder / "timings.json") or {}
@@ -138,7 +147,12 @@ def trial_row(trial, judges: list[str], defects: list[dict] | None) -> dict[str,
         "prod_removed": line_counts.get("prod_removed"),
         "test_added": line_counts.get("test_added"),
         "test_removed": line_counts.get("test_removed"),
-        "checks_passed": bool(checks.get("passed")) if checks.get("ran") else None,
+        "checks_passed": None,
+        "checks": {
+            # A Check that also fails on the base commit says nothing about this build.
+            name: "fails on base" if name in fails_on_base and result != "passed" else result
+            for name, result in _each_check(checks).items()
+        },
         "final_message": _text(trial.folder / "summary.md"),
         "changed_nothing": _changed_nothing(trial.folder),
         "findings": {},
@@ -146,6 +160,10 @@ def trial_row(trial, judges: list[str], defects: list[dict] | None) -> dict[str,
         "defect_checks": {},
         "defects": {},
     }
+    # The checks pass when every Check that passed on the base commit passes here.
+    counted = [r for name, r in row["checks"].items() if name not in fails_on_base]
+    if counted:
+        row["checks_passed"] = all(r == "passed" for r in counted)
     for key, _, decimals in BUILD + OUTPUT:
         row[key] = _round(row[key], decimals)
     votes: dict[str, list[str]] = {d["id"]: [] for d in defects or []}
@@ -167,23 +185,46 @@ def trial_row(trial, judges: list[str], defects: list[dict] | None) -> dict[str,
     # How many Defects of each severity the Trial has. Unknown until the Defects
     # are merged and, when there are any, until a Judge has checked this Trial.
     known = defects is not None and (not defects or any(v != [] for v in votes.values()))
+    # Defects the base commit already had were caused by no Variant.
+    counted = [d for d in defects or [] if not d.get("in_base")]
     for severity in MERGED:
         row[severity] = (
             sum(
                 1
-                for d in defects or []
+                for d in counted
                 if d["severity"] == severity and row["defects"][d["id"]] == "present"
             )
             if known
             else None
         )
     row["defects_total"] = sum(row[s] for s in MERGED) if known else None
+    present = [d for d in counted if row["defects"][d["id"]] == "present"]
+    row["categories"] = (
+        {c: sum(1 for d in present if d["category"] == c) for c in CATEGORIES} if known else {}
+    )
+    # Weighed between Variants: behaviour Defects, and those merged before
+    # categories, which were all weighed then.
+    row["behaviour_defects"] = (
+        sum(1 for d in present if d["category"] in ("behaviour", UNCATEGORISED)) if known else None
+    )
     nits = [found["nit"] for found in row["findings"].values()]
     row["nit"] = round(mean(nits), 2) if nits else None
     timeline = _timeline(m)
     if timeline:
         row["timeline"] = timeline
     return row
+
+
+def _each_check(checks: dict) -> dict[str, str]:
+    """Each Check's result: passed, failed or timed out. Checks saved before each
+    had a result of its own count as one Check named `checks`."""
+    if not checks.get("ran"):
+        return {}
+    each = checks.get("checks") or [{"name": "checks", **checks}]
+    return {
+        c["name"]: "passed" if c.get("passed") else "timed out" if c.get("timed_out") else "failed"
+        for c in each
+    }
 
 
 def _text(path: Path) -> str | None:
@@ -233,27 +274,42 @@ def aggregate(values: list[float | int | None], decimals: int) -> dict:
     }
 
 
-def _severity_order(defect: dict) -> tuple[int, int]:
+def _severity_order(defect: dict) -> tuple[int, int, int]:
+    """Behaviour first, then test gaps, scope and the uncategorised; worst first in each."""
     number = defect["id"].lstrip("D")
-    return SEVERITIES.index(defect["severity"]), int(number) if number.isdigit() else 0
+    ranks = [*CATEGORIES, UNCATEGORISED]
+    return (
+        ranks.index(defect["category"]),
+        SEVERITIES.index(defect["severity"]),
+        int(number) if number.isdigit() else 0,
+    )
 
 
 def _defects(merged: dict, trials: list, judges: list[str]) -> list[dict]:
     """The Defects, worst first. A Defect is as severe as the Judges voted when
     they said a Trial has it, or as its worst Finding until any has."""
     votes: dict[str, list[str]] = {}
+    base: dict[str, list[str]] = {}
     for trial in trials:
         for name in judges:
             checked = read_json(trial.folder / "defect-checks" / f"{name}.json") or {}
             for defect, answer in (checked.get("answers") or {}).items():
                 if answer.get("present") == "yes" and answer.get("severity"):
                     votes.setdefault(defect, []).append(answer["severity"])
+                if answer.get("present") == "yes" and answer.get("in_base") in PRESENT:
+                    base.setdefault(defect, []).append(answer["in_base"])
     found = []
     for defect in merged.get("defects") or []:
         mine = votes.get(defect["id"], [])
+        said = base.get(defect["id"], [])
         found.append(
             {
                 **defect,
+                # Already in the base commit when more answers say so than not,
+                # across every Judge and Trial; "unsure" settles nothing, a tie is no.
+                "in_base": said.count("yes") > said.count("no"),
+                "in_base_answers": {a: said.count(a) for a in PRESENT},
+                "category": defect.get("category") or UNCATEGORISED,
                 "severity": voted_severity(mine) or defect["severity"],
                 "found_severity": defect["severity"],
                 "severity_votes": len(mine),
@@ -269,7 +325,7 @@ def _differences(variants: list[dict], rows: list[dict]) -> list[dict]:
     for a, b in combinations([v["name"] for v in variants], 2):
         measures: dict[str, dict | None] = {}
         for key, _, decimals in COMPARED:
-            column = "defects_total" if key == "defects" else key
+            column = "behaviour_defects" if key == "defects" else key
             mine = [
                 [r[column] for r in rows if r["variant"] == name and r["status"] == "finished"]
                 for name in (a, b)
@@ -342,10 +398,15 @@ def build_report(settings: Settings, folder: Path) -> dict:
     merged = read_json(folder / "defects.json")
     trials = saved_trials(folder)
     defects = _defects(merged, trials, judges) if merged else None
-    rows = [trial_row(t, judges, defects) for t in trials]
+    # Each Check's result on the base commit, when `run` ran them there.
+    on_base = _each_check(read_json(folder / "base-checks.json") or {})
+    fails_on_base = {name for name, result in on_base.items() if result != "passed"}
+    rows = [trial_row(t, judges, defects, fails_on_base) for t in trials]
 
     order = [v.name for v in settings.variants]
     order += sorted({r["variant"] for r in rows} - set(order))
+    check_names = [c.name for c in settings.named_checks]
+    check_names += sorted({n for r in rows for n in r["checks"]} - set(check_names))
     variants = []
     for name in order:
         mine = [r for r in rows if r["variant"] == name]
@@ -366,29 +427,53 @@ def build_report(settings: Settings, folder: Path) -> dict:
                         "ran": sum(1 for r in mine if r["checks_passed"] is not None),
                         "trials": len(mine),
                     },
+                    "by_check": {
+                        name: {
+                            "passed": sum(1 for r in mine if r["checks"].get(name) == "passed"),
+                            "ran": sum(1 for r in mine if name in r["checks"]),
+                            "trials": len(mine),
+                            "fails_on_base": name in fails_on_base,
+                        }
+                        for name in check_names
+                        if any(name in r["checks"] for r in rows)
+                    },
                     **{k: aggregate([r[k] for r in done], d) for k, _, d in QUALITY},
+                    # Defects one Trial has, of each category.
+                    "categories": {
+                        c: aggregate([r["categories"].get(c) for r in done], 2) for c in CATEGORIES
+                    },
                 },
             }
         )
 
     defect_rows = []
     for defect in defects or []:
+        # Each Finding's key names its Trial and Judge: the Trials where a Judge
+        # reported this Defect in its own Verdict.
+        reported_in = {
+            key.split("/")[0] for key in defect["findings"] if key.split("/")[1] in judges
+        }
         standings = {}
         for v in variants:
-            found = [
-                r["defects"].get(defect["id"], "unchecked")
-                for r in rows
-                if r["variant"] == v["name"] and r["status"] == "finished"
-            ]
+            mine = [r for r in rows if r["variant"] == v["name"] and r["status"] == "finished"]
+            found = [r["defects"].get(defect["id"], "unchecked") for r in mine]
+            has = [r for r in mine if r["defects"].get(defect["id"]) == "present"]
             standings[v["name"]] = {
                 "present": found.count("present"),
                 "disputed": found.count("disputed"),
                 "checked": len(found) - found.count("unchecked"),
+                # Of the Trials that have it: found by a Judge's own Verdict, or
+                # known only from a Defect check.
+                "found": sum(1 for r in has if r["trial"] in reported_in),
+                "checked_only": sum(1 for r in has if r["trial"] not in reported_in),
             }
         checked = sum(s["checked"] for s in standings.values())
         defect_rows.append(
             {
                 "id": defect["id"],
+                "category": defect["category"],
+                "in_base": defect["in_base"],
+                "in_base_answers": defect["in_base_answers"],
                 "severity": defect["severity"],
                 "found_severity": defect["found_severity"],
                 "severity_votes": defect["severity_votes"],
@@ -463,7 +548,19 @@ def build_report(settings: Settings, folder: Path) -> dict:
         for kind in AGENT_NAMES
     }
     ran_checks = [r for r in rows if r["checks_passed"] is not None]
-    base_checks = read_json(folder / "base-checks.json") or {}
+    regressions = [
+        {"check": name, "trials": broke}
+        for name, result in on_base.items()
+        if result == "passed"
+        for broke in [
+            [
+                r["trial"]
+                for r in rows
+                if r["status"] == "finished" and r["checks"].get(name) in ("failed", "timed out")
+            ]
+        ]
+        if broke
+    ]
     return {
         "experiment": experiment.get("name", settings.name),
         "results_folder": str(folder),
@@ -487,9 +584,12 @@ def build_report(settings: Settings, folder: Path) -> dict:
             # Checks every Trial fails cannot tell one Variant from another.
             "no_trial_passed_the_checks": bool(ran_checks)
             and not any(r["checks_passed"] for r in ran_checks),
-            # Whether `run` saw the checks pass on the base commit, before any build.
-            "checks_passed_on_the_base": bool(base_checks.get("passed")),
+            # Whether `run` saw the checks counted above pass on the base commit.
+            "checks_passed_on_the_base": "passed" in on_base.values(),
+            # Checks that passed on the base commit and failed in a Trial: a build broke them.
+            "regressions": regressions,
         },
+        "check_names": [n for n in check_names if any(n in r["checks"] for r in rows)],
         "variants": variants,
         "differences": _differences(variants, rows),
         "defects": defect_rows if defects is not None else None,
@@ -546,7 +646,21 @@ def _summary(variants: list[dict], group: str, columns) -> list[list[str]]:
     ]
 
 
-def _checks_cell(checks: dict) -> str:
+def _checks_cell(quality: dict) -> str:
+    """Trials passed of all Trials: per Check when there are several."""
+    by_check = quality["by_check"]
+    if len(by_check) > 1:
+        return " · ".join(
+            f"{name} fails on base"
+            if c["fails_on_base"]
+            else f"{name} {c['passed']}/{c['trials']}"
+            if c["ran"]
+            else f"{name} –"
+            for name, c in by_check.items()
+        )
+    if any(c["fails_on_base"] for c in by_check.values()):
+        return "fails on base"
+    checks = quality["checks"]
     return f"{checks['passed']}/{checks['trials']}" if checks["ran"] else "–"
 
 
@@ -554,7 +668,8 @@ def _defect_cell(found: dict) -> str:
     if not found["checked"]:
         return "–"
     disputed = f" ({found['disputed']} disputed)" if found["disputed"] else ""
-    return f"{found['present']}/{found['checked']}{disputed}"
+    discovery = f" · found {found['found']}, checked only {found['checked_only']}"
+    return f"{found['present']}/{found['checked']}{disputed}{discovery}"
 
 
 def _difference_cell(found: dict | None) -> str:
@@ -565,12 +680,23 @@ def _difference_cell(found: dict | None) -> str:
     return f"{found['lower']} lower by {num(found['by'])}: {found['weight']}"
 
 
-def _defect_table(title: str, defects: list[dict], variants: list[dict], note: str) -> Table:
+def _categorised(data: dict) -> bool:
+    return any(d["category"] != UNCATEGORISED for d in data["defects"] or [])
+
+
+def _defect_table(
+    title: str, defects: list[dict], variants: list[dict], note: str, categories: bool
+) -> Table:
     return Table(
         title,
-        ["Defect", "Severity", "What is wrong", "Found by"] + [v["name"] for v in variants],
+        ["Defect"]
+        + (["Category"] if categories else [])
+        + ["Severity", "What is wrong", "Found by"]
+        + [v["name"] for v in variants],
         [
-            [d["id"], d["severity"], d["title"].replace("|", "/"), ", ".join(d["found_by"])]
+            [d["id"]]
+            + ([d["category"]] if categories else [])
+            + [d["severity"], d["title"].replace("|", "/"), ", ".join(d["found_by"])]
             + [_defect_cell(d["variants"][v["name"]]) for v in variants]
             for d in defects
         ],
@@ -603,7 +729,7 @@ def tables(data: dict) -> list[Table]:
             "Quality",
             labels + ["Checks passed"] + [label for _, label, _ in QUALITY],
             [
-                [v["name"], f"{v['finished']}/{v['trials']}", _checks_cell(v["quality"]["checks"])]
+                [v["name"], f"{v['finished']}/{v['trials']}", _checks_cell(v["quality"])]
                 + [cell(v["quality"][k]) for k, _, _ in QUALITY]
                 for v in variants
             ],
@@ -612,6 +738,18 @@ def tables(data: dict) -> list[Table]:
             "are what one Judge listed for one Trial, on average.",
         ),
     ]
+    if len(data["check_names"]) > 1:
+        found.append(
+            Table(
+                "Checks",
+                ["Trial"] + data["check_names"],
+                [
+                    [r["trial"]] + [r["checks"].get(name, "–") for name in data["check_names"]]
+                    for r in data["trials"]
+                ],
+                "Each Check's result in each Trial. – means it was not run.",
+            )
+        )
     if any(any(d["measures"].values()) for d in data["differences"]):
         found.append(
             Table(
@@ -627,11 +765,32 @@ def tables(data: dict) -> list[Table]:
                 "Clear: dealing the Trials out to the two Variants at random gives a "
                 "difference this large less than 1 time in 20. Possible: less than 1 time "
                 "in 5. Within noise: more often than that, so do not read it as a real "
-                "difference. With 3 Trials each, nothing can come out clear; it takes 4.",
+                "difference. With 3 Trials each, nothing can come out clear; it takes 4. "
+                "Only behaviour Defects (and Defects from before categories) are weighed; "
+                "test gaps and scope Defects are counted in the next table.",
             )
         )
-    differing = [d for d in data["defects"] or [] if not d["in_every_trial"]]
-    shared = [d for d in data["defects"] or [] if d["in_every_trial"]]
+    categories = _categorised(data)
+    if categories:
+        found.append(
+            Table(
+                "Defects by category",
+                labels + list(CATEGORY_LABELS.values()),
+                [
+                    [v["name"], f"{v['finished']}/{v['trials']}"]
+                    + [cell(v["quality"]["categories"][c]) for c in CATEGORY_LABELS]
+                    for v in variants
+                ],
+                "The Defects one Trial has, of each category, on average. Behaviour: the code "
+                "does the wrong thing. Test gaps: the code is right but its tests would miss a "
+                "regression. Scope: the build and the plan disagree about what to build. Only "
+                "behaviour Defects are weighed in the Differences table.",
+            )
+        )
+    caused = [d for d in data["defects"] or [] if not d["in_base"]]
+    in_base = [d for d in data["defects"] or [] if d["in_base"]]
+    differing = [d for d in caused if not d["in_every_trial"]]
+    shared = [d for d in caused if d["in_every_trial"]]
     severity = (
         " A Defect is as severe as the Judges who found it in a Trial voted: the middle "
         "of their votes."
@@ -646,6 +805,7 @@ def tables(data: dict) -> list[Table]:
                 "the Trials that have the Defect, of the Trials checked for it. A Trial has "
                 "a Defect when more of its Judges say it does than say it does not; an even "
                 "split is disputed." + severity,
+                categories,
             )
         )
     if shared:
@@ -657,6 +817,20 @@ def tables(data: dict) -> list[Table]:
                 "Every Trial checked has these, so they say nothing about which Variant is "
                 "better. They usually point at a gap in the plan."
                 + ("" if differing else severity),
+                categories,
+            )
+        )
+    if in_base:
+        found.append(
+            _defect_table(
+                "Defects already in the base commit",
+                in_base,
+                variants,
+                "More of the Judges' answers say the base commit already had these than say "
+                "it did not, so no Variant caused them. They are left out of every Variant's "
+                "Defect counts and of the Differences table. Each Variant's column is the "
+                "Trials that have the Defect, of the Trials checked for it.",
+                categories,
             )
         )
     if data["comparisons"]:
@@ -709,6 +883,12 @@ def failed_judging_lines(data: dict) -> list[str]:
 
 def flag_lines(data: dict) -> list[str]:
     out = []
+    for r in data["flags"]["regressions"]:
+        what = "the checks" if r["check"] == "checks" else f"the check `{r['check']}`"
+        out.append(
+            f"- **Regression:** {what} passed on the base commit and failed in "
+            f"{', '.join(r['trials'])}."
+        )
     if data["flags"]["subscription_login"]:
         out.append(
             "- Login: **subscription**. Subscription rate limits can slow Trials down, "
