@@ -21,7 +21,7 @@ from importlib.resources import files
 from jinja2 import Environment, PackageLoader, StrictUndefined
 from markupsafe import Markup, escape
 
-from .report import failed_judging_lines, first_paragraph, flag_lines, tables
+from .report import RETRY, failed_judging_lines, first_paragraph, flag_lines, tables
 
 _TEMPLATES = files("build_bench") / "templates"
 
@@ -261,6 +261,7 @@ def html(data: dict) -> str:
         tables=tables(data),
         timeline=_timeline(timed) if timed else None,
         failed_judging=failed_judging_lines(data),
+        retry=RETRY.replace("`", ""),
         css=Markup((_TEMPLATES / "report.css").read_text()),
         script=Markup((_TEMPLATES / "report.js").read_text()),
     )

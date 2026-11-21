@@ -44,6 +44,8 @@ QUALITY = [(s, f"{s.capitalize()} defects", 2) for s in MERGED] + [("nit", "Nits
 CATEGORY_LABELS = {"behaviour": "Behaviour", "test-gap": "Test gaps", "scope": "Scope"}
 #: The category of a Defect merged before Defects had categories.
 UNCATEGORISED = "uncategorised"
+#: What a Defect count reads when merging the Findings failed.
+MERGE_FAILED = "n/a, merge failed"
 
 
 def _round(value: float | None, decimals: int) -> float | int | None:
@@ -397,7 +399,10 @@ def build_report(settings: Settings, folder: Path) -> dict:
     judges = [j.name for j in settings.judges]
     merged = read_json(folder / "defects.json")
     trials = saved_trials(folder)
-    defects = _defects(merged, trials, judges) if merged else None
+    # Findings a failed merge left out of every Defect would make the counts too
+    # low, so after a failed merge no Defect count is known.
+    merge_failed = bool(merged) and merged.get("status") != "ok"
+    defects = _defects(merged, trials, judges) if merged and not merge_failed else None
     # Each Check's result on the base commit, when `run` ran them there.
     on_base = _each_check(read_json(folder / "base-checks.json") or {})
     fails_on_base = {name for name, result in on_base.items() if result != "passed"}
@@ -590,6 +595,9 @@ def build_report(settings: Settings, folder: Path) -> dict:
             "regressions": regressions,
         },
         "check_names": [n for n in check_names if any(n in r["checks"] for r in rows)],
+        "merge_failed": (
+            {"judge": merged.get("judge"), "reason": merged.get("reason")} if merge_failed else None
+        ),
         "variants": variants,
         "differences": _differences(variants, rows),
         "defects": defect_rows if defects is not None else None,
@@ -730,7 +738,10 @@ def tables(data: dict) -> list[Table]:
             labels + ["Checks passed"] + [label for _, label, _ in QUALITY],
             [
                 [v["name"], f"{v['finished']}/{v['trials']}", _checks_cell(v["quality"])]
-                + [cell(v["quality"][k]) for k, _, _ in QUALITY]
+                + [
+                    MERGE_FAILED if data["merge_failed"] and k in MERGED else cell(v["quality"][k])
+                    for k, _, _ in QUALITY
+                ]
                 for v in variants
             ],
             "Checks passed counts every Trial, so one that failed to finish counts against "
@@ -757,7 +768,12 @@ def tables(data: dict) -> list[Table]:
                 ["Variants"] + [label for _, label, _ in COMPARED],
                 [
                     [" and ".join(d["variants"])]
-                    + [_difference_cell(d["measures"][k]) for k, _, _ in COMPARED]
+                    + [
+                        MERGE_FAILED
+                        if data["merge_failed"] and k == "defects"
+                        else _difference_cell(d["measures"][k])
+                        for k, _, _ in COMPARED
+                    ]
                     for d in data["differences"]
                 ],
                 "Each cell names the Variant with the lower average and by how much, then "
@@ -869,6 +885,10 @@ def tables(data: dict) -> list[Table]:
     return found
 
 
+#: How to try failed judging again, under the list of what failed.
+RETRY = "`build-bench judge` tries these again; it keeps every step that succeeded."
+
+
 def failed_judging_lines(data: dict) -> list[str]:
     out = []
     for f in data["failed_judging"]:
@@ -883,6 +903,13 @@ def failed_judging_lines(data: dict) -> list[str]:
 
 def flag_lines(data: dict) -> list[str]:
     out = []
+    if data["merge_failed"]:
+        failed = data["merge_failed"]
+        out.append(
+            f"- **Merging the Findings into Defects failed** (by {failed['judge']}: "
+            f"{failed['reason']}), so no Defect count is known. `build-bench judge` tries "
+            "it again."
+        )
     for r in data["flags"]["regressions"]:
         what = "the checks" if r["check"] == "checks" else f"the check `{r['check']}`"
         out.append(
@@ -971,7 +998,7 @@ def markdown(data: dict) -> str:
             )
         out.append("")
     if data["failed_judging"]:
-        out += ["## Failed judging", ""]
+        out += ["## Failed judging", "", RETRY, ""]
         out += [f"- {line}" for line in failed_judging_lines(data)]
         out += [""]
     return "\n".join(out)

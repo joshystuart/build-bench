@@ -501,7 +501,9 @@ def test_failures_are_listed_and_left_out(saved, cli, no_models):
     md = (folder / "report.md").read_text()
     assert "## Failed Trials\n\n- v1-3: crashed: exit code 3" in md
     assert (
-        "## Failed judging\n\n- v2-1 by j: finding 1 has no title\n"
+        "## Failed judging\n\n"
+        "`build-bench judge` tries these again; it keeps every step that succeeded.\n\n"
+        "- v2-1 by j: finding 1 has no title\n"
         "- v2-1 by j (defect check): no answer for D1\n"
     ) in md
     data = json.loads((folder / "report.json").read_text())
@@ -511,6 +513,31 @@ def test_failures_are_listed_and_left_out(saved, cli, no_models):
     assert data["empty_trials"] == []
     assert "## Trials that changed nothing" not in md
     assert "What went wrong" in (folder / "report.html").read_text()
+
+
+def test_a_failed_merge_leaves_the_defect_counts_unknown(saved, cli, no_models):
+    settings, folder = saved
+    merged = json.loads((folder / "defects.json").read_text())
+    write(folder / "defects.json", {**merged, "status": "failed", "reason": "timeout"})
+    assert cli("report", settings)[0] == 0
+    md = (folder / "report.md").read_text()
+    # Warned before anything else, not only in the list of failures at the end.
+    first = md.split("\n## ")[0]
+    assert (
+        "- **Merging the Findings into Defects failed** (by j: timeout), so no Defect count "
+        "is known. `build-bench judge` tries it again."
+    ) in first
+    quality = next(t for t in md_tables(md) if t[0][2] == "Checks passed")
+    assert quality[1][3:6] == ["n/a, merge failed"] * 3
+    assert quality[1][6] != "n/a, merge failed"  # nits are not merged
+    differences = next(t for t in md_tables(md) if t[0][0] == "Variants")
+    assert differences[1][1] == "n/a, merge failed"
+    assert "## Defects" not in md
+    data = json.loads((folder / "report.json").read_text())
+    assert data["merge_failed"] == {"judge": "j", "reason": "timeout"}
+    assert data["defects"] is None
+    assert data["trials"][0]["major"] is None
+    assert "n/a, merge failed" in (folder / "report.html").read_text()
 
 
 def test_the_report_says_why_a_trial_went_wrong(experiment, cli, no_models):

@@ -51,7 +51,11 @@ One line per Variant unless noted.
   when the model is not on it.
 
 Failed Trials, failed Verdicts, failed Defect checks and failed Comparisons
-are listed with their reasons. The report flags Trials that ran alongside
+are listed with their reasons, and `build-bench judge` tries the failed
+judging again. When merging the Findings into Defects failed, no Defect count
+is known: the Defect columns and the Differences table's Defect column read
+"n/a, merge failed", the Defect tables are left out, and the report says so
+first. The report flags Trials that ran alongside
 others (time comparisons between them are weaker), an Experiment whose Trials
 used different agent versions, Judges that all share the builders' model
 family, checks that no Trial passed (with whether `run` saw them pass on the

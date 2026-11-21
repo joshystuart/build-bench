@@ -109,6 +109,7 @@ the same time scale. Hover or tab to a row to read it.</p>
 {% endif %}
 {% if failed_judging %}
 <h2>Failed judging</h2>
+<p class='muted'>{{ retry }}</p>
 <ul>
 {% for line in failed_judging %}
 <li>{{ line }}</li>
