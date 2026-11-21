@@ -119,7 +119,13 @@ compare anything. Whatever separates them is noise.
 
 The Trial workspaces sit apart, in the folder `experiment.json` names under
 `workspaces` (`~/.cache/build-bench/workspaces/<experiment>-<start time>-<hash>/`),
-one `<variant>-<repeat>/repo` and `config` per Trial. `clean` removes them.
+one `<variant>-<repeat>/repo` and `config` per Trial, and a `results-folder`
+file naming the results folder. `clean` removes them. Deleting a results folder
+by hand leaves its workspaces behind; `clean --all` removes those too, along
+with the workspaces of every results folder the Experiment still has. A
+workspaces folder without a `results-folder` file (made before build-bench
+wrote one) is matched to its results folder by name, so only this Experiment's
+are found; one it cannot place is left alone.
 Everything else every phase reads and writes is in the results folder, so a
 finished Experiment can be judged again with a new Judge, or reported again,
 without rebuilding (an Agent Judge without the workspaces works from the

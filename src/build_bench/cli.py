@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 from . import settings as settings_module
-from .results import ResultsError, new_folder, pick_folder
+from .results import ResultsError, all_folders, new_folder, pick_folder
 
 #: Exit codes: 0 all good, 1 a Trial or Verdict failed, 2 nothing could start,
 #: 130 stopped with Ctrl+C.
@@ -49,7 +49,22 @@ def _parser() -> argparse.ArgumentParser:
     )
     add("report", "Write the comparison of the Variants.")
     add("all", "run, judge and report in series, into a new results folder.", results=False)
-    add("clean", "Delete the Trial workspaces of a results folder, keeping the results.")
+    clean = commands.add_parser(
+        "clean",
+        help="Delete the Trial workspaces of a results folder, keeping the results.",
+        description="Delete the Trial workspaces of a results folder, keeping the results.",
+    )
+    clean.add_argument(
+        "settings", nargs="?", help="the Experiment's settings file (default: the nearest .benchrc)"
+    )
+    which = clean.add_mutually_exclusive_group()
+    which.add_argument("--results", metavar="DIR", help="results folder (default: the latest one)")
+    which.add_argument(
+        "--all",
+        action="store_true",
+        help="every results folder of the Experiment, and the workspaces left behind "
+        "by results folders that were deleted",
+    )
     return parser
 
 
@@ -146,11 +161,20 @@ def _all(settings, args) -> int:
 
 
 def _clean(settings, args) -> int:
-    from .clean import clean
+    import shutil
 
-    folder = pick_folder(settings, args.results)
-    removed = clean(folder)
-    print(f"Removed {removed} workspace(s) from {folder}")
+    from .clean import clean, orphans
+
+    if not args.all:
+        folder = pick_folder(settings, args.results)
+        print(f"Removed {clean(folder)} workspace(s) from {folder}")
+        return OK
+    for folder in all_folders(settings):
+        print(f"Removed {clean(folder)} workspace(s) from {folder}")
+    left = orphans(settings)
+    for root in left:
+        shutil.rmtree(root)
+    print(f"Removed {len(left)} workspace folder(s) whose results folder is gone")
     return OK
 
 

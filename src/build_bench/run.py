@@ -22,6 +22,7 @@ from .agent import COPILOT_LOGIN, STOPPED, AgentRequest, Agents, Headless
 from .progress import Live
 from .results import (
     Trial,
+    mark_workspaces,
     new_workspaces,
     planned_trials,
     read_json,
@@ -183,6 +184,7 @@ def run(
     versions = preflight(settings, agent)
     say(WARNING)
     start_folder(settings, folder, versions)
+    mark_workspaces(folder)
     inherited = inherited_instructions(workspaces(folder) or folder)
     if inherited:
         say(
