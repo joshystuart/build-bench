@@ -18,6 +18,7 @@ them (a CLAUDE.md, node_modules, tool configs) belongs to the repository the
 Experiment is kept in. experiment.json names the folder:
 
 $XDG_CACHE_HOME/build-bench/workspaces/<experiment>-<start time>-<hash>/
+    results-folder                                         (the results folder's path)
     <variant>-<repeat>/repo  <variant>-<repeat>/config     (removed by `clean`)
 """
 
@@ -72,12 +73,51 @@ def new_folder(settings: Settings) -> Path:
     return folder
 
 
-def new_workspaces(folder: Path) -> Path:
-    """A folder for a results folder's Trial workspaces, outside any repository."""
+def cached_workspaces() -> Path:
+    """Where every results folder's Trial workspaces go, outside any repository."""
     cache = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
-    digest = hashlib.sha256(str(folder.resolve()).encode()).hexdigest()[:8]
-    name = f"{folder.parent.name}-{folder.name}-{digest}"
-    return Path(cache) / "build-bench" / "workspaces" / name
+    return Path(cache) / "build-bench" / "workspaces"
+
+
+def new_workspaces(folder: Path) -> Path:
+    """A folder for a results folder's Trial workspaces."""
+    return cached_workspaces() / f"{folder.parent.name}-{folder.name}-{_digest(folder)}"
+
+
+def _digest(folder: Path) -> str:
+    return hashlib.sha256(str(folder.resolve()).encode()).hexdigest()[:8]
+
+
+#: The file in a workspaces folder that names its results folder, so `clean --all`
+#: can tell when that results folder is gone.
+OWNER = "results-folder"
+
+
+def mark_workspaces(folder: Path) -> None:
+    root = workspaces(folder)
+    if root is not None:
+        root.mkdir(parents=True, exist_ok=True)
+        (root / OWNER).write_text(f"{folder.resolve()}\n")
+
+
+def owner(root: Path, settings: Settings) -> Path | None:
+    """The results folder a cached workspaces folder belongs to, if that can be told.
+
+    From its `results-folder` file; for folders made before that file, from its
+    name, when the name's hash matches a results folder of this Experiment."""
+    marker = root / OWNER
+    if marker.exists():
+        try:
+            found = Path(marker.read_text().strip())
+        except (OSError, UnicodeDecodeError):
+            return None
+        return found if found.is_absolute() else None
+    prefix = f"{settings.name}-"
+    start, _, digest = root.name.removeprefix(prefix).rpartition("-")
+    if not root.name.startswith(prefix) or not start:
+        return None
+    folder = experiment_root(settings) / start
+    return folder if _digest(folder) == digest else None
 
 
 def workspaces(folder: Path) -> Path | None:
@@ -86,12 +126,17 @@ def workspaces(folder: Path) -> Path | None:
     return Path(found) if found else None
 
 
+def all_folders(settings: Settings) -> list[Path]:
+    """Every results folder of the Experiment, oldest first."""
+    root = experiment_root(settings)
+    return sorted(
+        (p for p in root.glob("*") if (p / "experiment.json").is_file()), key=_start_order
+    )
+
+
 def latest_folder(settings: Settings) -> Path:
     root = experiment_root(settings)
-    found = sorted(
-        (p for p in root.glob("*") if (p / "experiment.json").is_file()),
-        key=_start_order,
-    )
+    found = all_folders(settings)
     if not found:
         raise ResultsError(f"no results folder for {settings.name!r} under {root}")
     return found[-1]

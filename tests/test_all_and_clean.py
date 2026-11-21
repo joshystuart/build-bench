@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -130,3 +131,55 @@ def test_the_installed_command(tmp_path):
     assert done.returncode == 0
     for command in ("run", "judge", "report", "all", "clean"):
         assert command in done.stdout
+
+
+def test_clean_all_cleans_every_results_folder_and_workspaces_left_behind(
+    experiment, fake, cli, cache_home
+):
+    settings = experiment(variants=VARIANTS[1:], checks="true")
+    for _ in range(3):
+        assert cli("run", settings)[0] == 0
+    kept, deleted, unmarked = sorted((settings.parent / ".bench" / "results" / "demo").iterdir())
+    roots = {
+        f: Path(json.loads((f / "experiment.json").read_text())["workspaces"])
+        for f in (kept, deleted, unmarked)
+    }
+    assert all((root / "v2-1" / "repo").is_dir() for root in roots.values())
+    assert (roots[kept] / "results-folder").read_text().strip() == str(kept.resolve())
+    # Workspaces made before the results-folder file are told apart by their name.
+    (roots[unmarked] / "results-folder").unlink()
+    # Results folders deleted by hand leave their workspaces behind.
+    shutil.rmtree(deleted)
+    shutil.rmtree(unmarked)
+    # Folders build-bench cannot place are left alone: another tool's, and one
+    # named like this Experiment's whose hash matches no results folder of it.
+    cache = cache_home / "build-bench" / "workspaces"
+    strangers = [cache / "something-else", cache / f"{unmarked.parent.name}-{unmarked.name}-0000"]
+    for stranger in strangers:
+        stranger.mkdir()
+
+    code, out, _ = cli("clean", settings, "--all")
+    assert code == 0, out
+    assert f"Removed 1 workspace(s) from {kept}" in out
+    assert "Removed 2 workspace folder(s) whose results folder is gone" in out
+    assert not any(root.exists() for root in roots.values())
+    assert all(stranger.is_dir() for stranger in strangers)
+    assert (kept / "trials" / "v2-1" / "status.json").is_file()
+
+
+def test_clean_leaves_a_workspaces_folder_outside_the_cache(experiment, fake, cli, tmp_path):
+    settings = experiment(variants=VARIANTS[1:])
+    assert cli("run", settings)[0] == 0
+    folder = results_folder(settings)
+    elsewhere = tmp_path / "not-build-benchs"
+    elsewhere.mkdir()
+    (elsewhere / "keep.txt").write_text("mine")
+    meta = json.loads((folder / "experiment.json").read_text())
+    (folder / "experiment.json").write_text(json.dumps({**meta, "workspaces": str(elsewhere)}))
+    assert cli("clean", settings)[0] == 0
+    assert (elsewhere / "keep.txt").read_text() == "mine"
+
+
+def test_clean_takes_all_or_one_results_folder(experiment, cli):
+    with pytest.raises(SystemExit):
+        cli("clean", experiment(), "--all", "--results", "somewhere")

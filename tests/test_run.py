@@ -680,7 +680,7 @@ def test_the_checks_are_run_on_the_base_commit_before_any_trial(experiment, fake
     assert "$ touch prepared" in (folder / "base-checks.log").read_text()
     # The base's own workspace is gone; only the Trial's is left.
     workspaces = Path(json.loads((folder / "experiment.json").read_text())["workspaces"])
-    assert [p.name for p in workspaces.iterdir()] == ["alpha-1"]
+    assert sorted(p.name for p in workspaces.iterdir()) == ["alpha-1", "results-folder"]
 
     # A check that passed is not repeated when the run is resumed.
     fake.set(per_cwd={"/alpha-2/": "crash"})
