@@ -437,6 +437,29 @@ def test_a_trial_that_hits_its_budget_is_failed(experiment, fake, cli):
     assert status["reason"] == "budget: reached the spending limit of $0.5"
 
 
+def test_work_left_on_another_branch_fails_the_trial(experiment, fake, cli):
+    fake.set(mode="elsewhere")
+    settings = experiment()
+    code, out, _ = cli("run", settings)
+    assert code == 1
+    trial = results_folder(settings) / "trials" / "alpha-1"
+    reason = (
+        "the build left its work on the branch `feat/fake` (2 commit(s) past the "
+        "checked-out one), so its diff is empty"
+    )
+    assert json.loads((trial / "status.json").read_text())["reason"] == reason
+    assert f"[fail]  alpha-1 {reason}" in out
+
+
+def test_a_build_that_changed_nothing_still_finishes(experiment, fake, cli):
+    fake.set(mode="nothing")
+    settings = experiment()
+    assert cli("run", settings)[0] == 0
+    trial = results_folder(settings) / "trials" / "alpha-1"
+    assert json.loads((trial / "status.json").read_text())["status"] == "finished"
+    assert (trial / "diff.patch").read_text() == ""
+
+
 # --- Many Trials -------------------------------------------------------------------
 
 

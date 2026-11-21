@@ -31,7 +31,10 @@ and what is measured afterwards.
   [settings.md](settings.md#checks-on-the-base-commit).
 - **Output:** everything that differs from the base commit, committed or not,
   as one diff that leaves out files git ignores (so what `pre_build` installs
-  does not count). The plan folder is diffed separately.
+  does not count). The plan folder is diffed separately. When that diff is
+  empty but a local branch has commits the checked-out one lacks, the build
+  left its work there: the Trial fails, naming the branch, rather than being
+  recorded as a build that changed nothing.
 
 ## Watching a run
 
