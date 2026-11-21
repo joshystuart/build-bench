@@ -11,6 +11,11 @@ Group the new findings below into distinct defects.
   different.
 - Two findings are different defects when they are only near each other in the
   code, or share a symptom but have different causes.
+- Findings of different categories (behaviour, test-gap, scope) are never the
+  same defect, and a finding goes into an existing defect only when their
+  categories match.
+- Test-gap findings that one added test would close are the same defect, even
+  when they name different cases or files.
 - When in doubt, keep them apart.
 
 Place every new finding in exactly one defect: either a defect that already
@@ -22,7 +27,7 @@ without one build's line numbers.
 
 Reply with only a JSON object in a ```json fenced block, in exactly this shape.
 For a defect that already exists give its id and the findings to add. For a new
-defect use the id "new":
+defect use the id "new" and give its category, the one its findings share:
 
 ```json
 {
@@ -32,6 +37,7 @@ defect use the id "new":
       "id": "new",
       "title": "One line naming the problem",
       "description": "What is wrong and where to look for it in any build.",
+      "category": "behaviour",
       "findings": ["F1", "F4"]
     }
   ]

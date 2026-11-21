@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
 import shutil
@@ -27,7 +29,7 @@ from .results import (
     workspaces,
     write_json,
 )
-from .settings import Settings
+from .settings import CheckCommand, Settings
 
 WARNING = """\
 WARNING: build-bench starts coding agents with every permission check bypassed.
@@ -177,7 +179,7 @@ def run(
     With `live`, a progress display is redrawn below the printed lines while
     the Trials run; it needs a terminal.
     """
-    agent = agent or Agents()
+    agent = agent or Agents(settings.env)
     versions = preflight(settings, agent)
     say(WARNING)
     start_folder(settings, folder, versions)
@@ -221,16 +223,44 @@ def run(
     return [t for t in planned_trials(settings, folder) if not t.finished]
 
 
-def checks_in(settings: Settings, cwd: Path) -> tuple[dict, str]:
-    """Run `checks` in `cwd`. Returns what happened and the command's output."""
-    assert settings.checks is not None
+def checks_in(settings: Settings, cwd: Path) -> tuple[dict, dict[str, str]]:
+    """Run every Check in `cwd`, in order, even after one fails. Returns what
+    happened, for the checks as a whole and for each Check, and each Check's output."""
+    each, outputs = [], {}
+    for check in settings.named_checks:
+        result, outputs[check.name] = _run_check(settings, check, cwd)
+        each.append(result)
+    failed = [c for c in each if not c["passed"]]
+    whole = {
+        "ran": True,
+        "command": settings.checks_command,
+        "passed": not failed,
+        "exit_code": failed[0]["exit_code"] if failed else 0,
+        "timed_out": any(c["timed_out"] for c in each),
+        "seconds": round(sum(c["seconds"] for c in each), 3),
+        "checks": each,
+    }
+    return whole, outputs
+
+
+def checks_output(settings: Settings, outputs: dict[str, str]) -> str:
+    """Every Check's output as one log: a single Check's as it is, several each
+    under the command that wrote it."""
+    if len(outputs) == 1:
+        return next(iter(outputs.values()))
+    commands = {c.name: c.command for c in settings.named_checks}
+    return "".join(f"$ {commands.get(name, name)}\n{text}" for name, text in outputs.items())
+
+
+def _run_check(settings: Settings, check: CheckCommand, cwd: Path) -> tuple[dict, str]:
     timeout = settings.limits.timeout_minutes
     started = time.time()
     try:
         done = subprocess.run(
-            settings.checks,
+            check.command,
             shell=True,
             cwd=cwd,
+            env=settings.environment(),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             timeout=timeout * 60 if timeout else None,
@@ -239,14 +269,64 @@ def checks_in(settings: Settings, cwd: Path) -> tuple[dict, str]:
     except subprocess.TimeoutExpired as error:
         output, code = error.stdout or b"", None
     result = {
-        "ran": True,
-        "command": settings.checks,
+        "name": check.name,
+        "command": check.command,
         "passed": code == 0,
         "exit_code": code,
         "timed_out": code is None,
         "seconds": round(time.time() - started, 3),
     }
     return result, output.decode(errors="replace")
+
+
+def run_steps(name: str, steps: list[str], cwd: Path, out, env: dict | None = None) -> str | None:
+    """Run shell `steps` in order in `cwd`, writing each and its output to `out`.
+    Returns why one failed, naming the setting `name`, or None when all passed."""
+    for step in steps:
+        out.write(f"$ {step}\n")
+        out.flush()
+        done = subprocess.run(step, shell=True, cwd=cwd, stdout=out, stderr=out, env=env)
+        if done.returncode != 0:
+            return f"{name}: `{step}` exited with code {done.returncode}"
+    return None
+
+
+def runtime_problem(settings: Settings, cwd: Path, out) -> str | None:
+    """Run `runtime_check` in `cwd`, writing it and its output to `out`. Returns why
+    it failed, ending with the end of what it wrote to stderr, or None."""
+    if not settings.runtime_check:
+        return None
+    out.write(f"$ {settings.runtime_check}\n")
+    out.flush()
+    done = subprocess.run(
+        settings.runtime_check,
+        shell=True,
+        cwd=cwd,
+        env=settings.environment(),
+        stdout=out,
+        stderr=subprocess.PIPE,
+    )
+    said = done.stderr.decode(errors="replace")
+    out.write(said)
+    if done.returncode == 0:
+        return None
+    tail = [line.strip() for line in said.strip().splitlines()[-3:] if line.strip()]
+    reason = f"runtime_check: `{settings.runtime_check}` exited with code {done.returncode}"
+    return reason + (f": {' | '.join(tail)}" if tail else "")
+
+
+def settings_key(settings: Settings, fields: list[str]) -> str:
+    """A short hash of some of the settings, saved beside a result so it is
+    reused only while they stay the same."""
+    chosen = settings.model_dump(mode="json", include=set(fields))
+    chosen["checks"] = [c.model_dump() for c in settings.named_checks]
+    text = json.dumps({k: chosen.get(k) for k in sorted([*fields, "checks"])})
+    return hashlib.sha256(text.encode()).hexdigest()[:12]
+
+
+def base_checks_key(settings: Settings) -> str:
+    """What the checks on the base commit depend on, besides the commit itself."""
+    return settings_key(settings, ["env", "runtime_check"])
 
 
 #: How many lines of a failing base check's output the error shows.
@@ -260,12 +340,22 @@ def check_base(settings: Settings, folder: Path, say=print) -> None:
     The result is saved in `base-checks.json`, so a resumed run does not repeat a
     check that passed. Raises RunError when the base fails.
     """
-    if not settings.checks or not settings.check_base:
+    if not settings.checks or settings.check_base is False:
         return
+    key = base_checks_key(settings)
     saved = read_json(folder / "base-checks.json") or {}
-    if saved.get("passed") and saved.get("command") == settings.checks:
+    if saved.get("settings_key") == key and (saved.get("passed") or settings.check_base == "mark"):
         return
-    say(f"Running the checks (`{settings.checks}`) on the base commit…")
+    # Saved before the key was: reused as it was then, while nothing new is set.
+    if (
+        "settings_key" not in saved
+        and saved.get("passed")
+        and saved.get("command") == settings.checks_command
+        and not settings.env
+        and not settings.runtime_check
+    ):
+        return
+    say(f"Running the checks (`{settings.checks_command}`) on the base commit…")
     log = folder / "base-checks.log"
     home = (workspaces(folder) or folder) / "base"
     repo = home / "repo"
@@ -275,32 +365,51 @@ def check_base(settings: Settings, folder: Path, say=print) -> None:
     try:
         make_workspace(settings, folder, repo)
         with log.open("w") as out:
-            for step in settings.pre_build:
-                out.write(f"$ {step}\n")
-                out.flush()
-                done = subprocess.run(step, shell=True, cwd=repo, stdout=out, stderr=out)
-                if done.returncode != 0:
-                    reason = f"pre_build: `{step}` exited with code {done.returncode}"
-                    result = {"ran": False, "passed": False, "reason": reason}
-                    break
+            failure = runtime_problem(settings, repo, out) or run_steps(
+                "pre_build", settings.pre_build, repo, out, env=settings.environment()
+            )
+        if failure:
+            result = {"ran": False, "passed": False, "reason": failure}
         if not result:
-            result, output = checks_in(settings, repo)
+            result, outputs = checks_in(settings, repo)
+            result["command"] = settings.checks_command
             with log.open("a") as out:
-                out.write(f"$ {settings.checks}\n{output}")
+                if len(outputs) == 1:
+                    out.write(f"$ {settings.checks_command}\n")
+                out.write(checks_output(settings, outputs))
     finally:
         shutil.rmtree(home, ignore_errors=True)
     _redact_file(log, secrets(settings))
-    write_json(folder / "base-checks.json", {**result, "base_sha": settings.base_sha})
+    write_json(
+        folder / "base-checks.json", {**result, "base_sha": settings.base_sha, "settings_key": key}
+    )
     if result["passed"]:
         say("The checks pass on the base commit.")
         return
+    failing = [c for c in result.get("checks") or [] if not c["passed"]]
+    if settings.check_base == "mark":
+        if not result["ran"]:
+            say(f"The checks could not run on the base commit: {result['reason']}.")
+        elif len(failing) == 1:
+            say(f"The check `{failing[0]['name']}` fails on the base commit; the report marks it.")
+        else:
+            names = ", ".join(f"`{c['name']}`" for c in failing)
+            say(f"The checks {names} fail on the base commit; the report marks them.")
+        return
     if not result["ran"]:
         why = f"{result['reason']} on the base commit"
+    elif not settings.one_checks_command:
+        named = [f"`{c['name']}` (`{c['command']}`)" for c in failing]
+        why = (
+            f"the check {named[0]} fails"
+            if len(named) == 1
+            else f"the checks {', '.join(named)} fail"
+        ) + " on the base commit"
     elif result["timed_out"]:
-        why = f"the checks (`{settings.checks}`) timed out on the base commit"
+        why = f"the checks (`{settings.checks_command}`) timed out on the base commit"
     else:
         why = (
-            f"the checks (`{settings.checks}`) fail on the base commit "
+            f"the checks (`{settings.checks_command}`) fail on the base commit "
             f"with exit code {result['exit_code']}"
         )
     tail = log.read_text(errors="replace").splitlines()[-BASE_LOG_LINES:]
@@ -308,7 +417,8 @@ def check_base(settings: Settings, folder: Path, say=print) -> None:
         f"{why}, so no Trial could pass them. Nothing was built.\n"
         + "".join(f"  {line}\n" for line in tail)
         + f"The whole output is in {log}\n"
-        "Fix the checks on this machine, or set `check_base: false` to build anyway."
+        "Fix the checks on this machine, set `check_base: mark` to build anyway and have "
+        "the report mark them, or set `check_base: false` to build anyway."
     )
 
 
@@ -376,13 +486,19 @@ def _build(settings: Settings, folder: Path, trial: Trial, agent: Headless) -> d
 
     pre_build_seconds = 0.0
     with (trial.folder / "pre_build.log").open("w") as log:
+        # A wrong runtime stops the Trial before an agent is paid for.
+        failure = runtime_problem(settings, repo, log)
+        if failure:
+            return {"status": "failed", "reason": failure}
         for step in settings.pre_build:
             if agent.stopped:
                 return {"status": "failed", "reason": STOPPED}
             log.write(f"$ {step}\n")
             log.flush()
             started = time.time()
-            done = subprocess.run(step, shell=True, cwd=repo, stdout=log, stderr=log)
+            done = subprocess.run(
+                step, shell=True, cwd=repo, stdout=log, stderr=log, env=settings.environment()
+            )
             pre_build_seconds += time.time() - started
             if done.returncode != 0:
                 write_json(trial.folder / "timings.json", {"pre_build_seconds": pre_build_seconds})

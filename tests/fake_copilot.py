@@ -50,7 +50,13 @@ def main() -> int:
         "mode": mode,
         "env": {
             k: os.environ.get(k)
-            for k in ("COPILOT_HOME", "COPILOT_MODEL", "COPILOT_GITHUB_TOKEN", "ANTHROPIC_API_KEY")
+            for k in (
+                "COPILOT_HOME",
+                "COPILOT_MODEL",
+                "COPILOT_GITHUB_TOKEN",
+                "ANTHROPIC_API_KEY",
+                "BENCH_PROBE",
+            )
         },
         "config_files": sorted(p.name for p in home.iterdir()) if home.is_dir() else None,
         "start": time.time(),
@@ -73,7 +79,9 @@ def main() -> int:
     elif kind == "merge":
         said = control.get("merge_reply", replies.merge_reply(prompt))
     elif kind == "check":
-        said = replies.check_reply(prompt, control.get("check_present", "yes"))
+        said = replies.check_reply(
+            prompt, control.get("check_present", "yes"), control.get("check_in_base", "no")
+        )
     elif kind == "compare":
         said = replies.compare_reply(control.get("compare_better", "1"))
     else:

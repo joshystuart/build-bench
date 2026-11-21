@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from importlib import resources
 from pathlib import Path
@@ -63,6 +64,13 @@ class Variant(_Strict):
     repeats: int = Field(default=1, ge=1)
 
 
+class CheckCommand(_Strict):
+    """One Check: a named command the project must pass."""
+
+    name: str = Field(pattern=NAME_PATTERN)
+    command: str
+
+
 class Compare(_Strict):
     #: The most pairs of Trials this Judge compares, spread over the Variants.
     max_pairs: int = Field(ge=1)
@@ -88,9 +96,21 @@ class Settings(_Strict):
     plan: Path | None = None
     results: Path = Path(".bench/results")
     pre_build: list[str] = []
-    checks: str | None = None
-    #: Whether `run` first makes sure `checks` passes on the base commit.
-    check_base: bool = True
+    #: One command, or a list of named Checks.
+    checks: str | list[CheckCommand] | None = None
+    #: Run the checks in each Trial's own workspace, put back afterwards, not in a copy.
+    checks_in_place: bool = False
+    #: Commands run in every throwaway copy of a Trial before it is used.
+    copy_setup: list[str] = []
+    #: Variables for every process the Experiment's commands start; `$NAME` and
+    #: `${NAME}` expand from build-bench's own environment when the settings load.
+    env: dict[str, str] = {}
+    #: A shell command that fails when the runtime is wrong; run before each build
+    #: and before the checks.
+    runtime_check: str | None = None
+    #: Whether `run` first runs the checks on the base commit: `true` stops the run
+    #: when any fails there, `mark` builds anyway and has the report mark it.
+    check_base: bool | Literal["mark"] = True
     concurrency: int = Field(default=1, ge=1)
     #: Claude Code's login. Needed only when a Variant or Judge is Claude Code;
     #: the Copilot CLI finds its own login.
@@ -107,6 +127,8 @@ class Settings(_Strict):
     judges: list[Judge] = []
     #: The Judge that merges Findings into Defects; the first Judge when not named.
     merge_judge: str | None = None
+    #: A file whose text is added to every judging prompt, under its own heading.
+    judge_guidance: Path | None = None
 
     # Filled in by load(), never read from the file.
     path: Path | None = Field(default=None, exclude=True)
@@ -123,6 +145,24 @@ class Settings(_Strict):
     def folder(self) -> Path:
         assert self.path is not None
         return self.path.parent
+
+    @property
+    def named_checks(self) -> list[CheckCommand]:
+        """Every Check, in order. A `checks` string is one Check named `checks`."""
+        if isinstance(self.checks, str):
+            return [CheckCommand(name="checks", command=self.checks)]
+        return list(self.checks or [])
+
+    @property
+    def one_checks_command(self) -> bool:
+        """`checks` is one command, not a list of named Checks."""
+        return isinstance(self.checks, str)
+
+    @property
+    def checks_command(self) -> str | None:
+        """The checks as one command line, as saved for the checks as a whole."""
+        named = self.named_checks
+        return " && ".join(c.command for c in named) if named else None
 
     @property
     def auth_variable(self) -> str:
@@ -146,6 +186,10 @@ class Settings(_Strict):
             return None
         assert self.auth is not None
         return DEFAULT_AUTH_ENV[self.auth], os.environ[self.auth_variable]
+
+    def environment(self) -> dict[str, str]:
+        """The environment for the commands and agents the Experiment starts."""
+        return {**os.environ, **self.env}
 
     def judge_limits(self, judge: Judge) -> Limits:
         """A Judge's own limits win; anything it leaves out comes from the Experiment."""
@@ -183,7 +227,8 @@ def load(path: str | Path) -> Settings:
     try:
         settings = Settings.model_validate(raw)
     except ValidationError as error:
-        raise SettingsError([_describe(path, e) for e in error.errors()]) from None
+        errors = [e for e in error.errors() if not _other_branch(e, raw)]
+        raise SettingsError([_describe(path, e) for e in errors]) from None
 
     settings.path = path
     problems = _check(settings)
@@ -192,10 +237,28 @@ def load(path: str | Path) -> Settings:
     return settings
 
 
+def _other_branch(error: Any, raw: dict) -> bool:
+    """An error for the string form of `checks` when the file gives a list, or
+    the other way round: only the form the file uses is worth naming. Of the
+    two errors for a bad `check_base`, only one is kept."""
+    loc = error["loc"]
+    if loc and loc[0] == "check_base":
+        return len(loc) > 1 and loc[1] != "bool"
+    if len(loc) < 2 or loc[0] != "checks":
+        return False
+    return (loc[1] == "str") == isinstance(raw.get("checks"), list)
+
+
 def _describe(path: Path, error: Any) -> str:
-    where = ".".join(str(part) for part in error["loc"]) or "(top level)"
+    # A union names the form it tried (`str`, `list[CheckCommand]`); leave that out.
+    loc = [
+        p for p in error["loc"] if not (isinstance(p, str) and (p in ("str", "bool") or "[" in p))
+    ]
+    where = ".".join(str(part) for part in loc) or "(top level)"
     message = error["msg"]
-    if error["type"] == "missing":
+    if loc == ["check_base"]:
+        message = "must be true, false or mark"
+    elif error["type"] == "missing":
         message = "required field is missing"
     elif error["type"] == "extra_forbidden":
         message = "unknown field"
@@ -208,6 +271,7 @@ def _check(s: Settings) -> list[str]:
 
     s.repo = (folder / s.repo).resolve()
     s.results = (folder / s.results).resolve()
+    problems += _expand_env(s)
     if not (s.repo / ".git").exists():
         problems.append(f"repo: not a git repository: {s.repo}")
     else:
@@ -268,9 +332,34 @@ def _check(s: Settings) -> list[str]:
         if judge.type == "api" and judge.effort:
             problems.append(f"judges.{i}.effort: only for claude and copilot judges")
 
+    check_names = [c.name for c in s.named_checks]
+    for name in sorted({n for n in check_names if check_names.count(n) > 1}):
+        problems.append(f"checks: name {name!r} is used more than once")
+
+    if s.judge_guidance is not None:
+        s.judge_guidance = (folder / s.judge_guidance).resolve()
+        if not s.judge_guidance.is_file():
+            problems.append(f"judge_guidance: file not found: {s.judge_guidance}")
+
     for i, language in enumerate(s.languages):
         if find_preset(s, language) is None:
             problems.append(f"languages.{i}: no preset named {language!r}")
+    return problems
+
+
+_VARIABLE = re.compile(r"\$(?:\{(\w+)\}|(\w+))")
+
+
+def _expand_env(s: Settings) -> list[str]:
+    """Expand `$NAME` and `${NAME}` in each `env` value; an unset name is a problem,
+    so a typo never becomes an empty entry in `PATH`."""
+    problems = []
+    for name, value in s.env.items():
+        unset = [a or b for a, b in _VARIABLE.findall(value) if (a or b) not in os.environ]
+        for missing in dict.fromkeys(unset):
+            problems.append(f"env.{name}: ${missing} is not set")
+        if not unset:
+            s.env[name] = _VARIABLE.sub(lambda m: os.environ[m.group(1) or m.group(2)], value)
     return problems
 
 

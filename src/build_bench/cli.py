@@ -40,7 +40,13 @@ def _parser() -> argparse.ArgumentParser:
     where.add_argument(
         "--resume", action="store_true", help="finish the Trials in the latest results folder"
     )
-    add("judge", "Measure each Trial, then ask each Judge for a Verdict.")
+    judge = add("judge", "Measure each Trial, then ask each Judge for a Verdict.")
+    judge.add_argument(
+        "--fresh",
+        action="store_true",
+        help="judge the results folder again from nothing: measurements, Verdicts, "
+        "Defects, Defect checks and Comparisons",
+    )
     add("report", "Write the comparison of the Variants.")
     add("all", "run, judge and report in series, into a new results folder.", results=False)
     add("clean", "Delete the Trial workspaces of a results folder, keeping the results.")
@@ -111,7 +117,11 @@ def _judge(settings, args, folder: Path | None = None) -> int:
     _need_env(settings, judges=True)
     folder = folder or pick_folder(settings, args.results)
     print(f"Results: {folder}")
-    return OK if judge(settings, folder, live=sys.stdout.isatty()) else FAILED
+    return (
+        OK
+        if judge(settings, folder, fresh=getattr(args, "fresh", False), live=sys.stdout.isatty())
+        else FAILED
+    )
 
 
 def _report(settings, args, folder: Path | None = None) -> int:

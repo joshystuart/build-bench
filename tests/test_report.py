@@ -275,14 +275,20 @@ def test_each_defect_is_counted_per_variant_worst_first(saved, cli, no_models):
     data = json.loads((folder / "report.json").read_text())
     assert [d["id"] for d in data["defects"]] == ["D2", "D1"]
     assert data["defects"][0]["variants"] == {
-        "v1": {"present": 1, "disputed": 0, "checked": 2},
-        "v2": {"present": 0, "disputed": 1, "checked": 1},
+        "v1": {"present": 1, "disputed": 0, "checked": 2, "found": 0, "checked_only": 1},
+        "v2": {"present": 0, "disputed": 1, "checked": 1, "found": 0, "checked_only": 0},
     }
     assert data["defects"][1]["found_by"] == ["j"]
     md = (folder / "report.md").read_text()
     assert "| Defect | Severity | What is wrong | Found by | v1 | v2 |" in md
-    assert "| D2 | critical | add loses data | j | 1/2 | 0/1 (1 disputed) |" in md
-    assert "| D1 | major | mul is missing | j | 2/2 | 0/1 |" in md
+    assert (
+        "| D2 | critical | add loses data | j | 1/2 · found 0, checked only 1 "
+        "| 0/1 (1 disputed) · found 0, checked only 0 |" in md
+    )
+    assert (
+        "| D1 | major | mul is missing | j | 2/2 · found 2, checked only 0 "
+        "| 0/1 · found 0, checked only 0 |" in md
+    )
 
 
 def many(folder, name: str, costs: list[float], answers: list[dict]) -> None:
@@ -346,9 +352,15 @@ def test_defects_in_every_trial_get_their_own_table(saved, cli, no_models):
     assert {d["id"]: d["in_every_trial"] for d in data["defects"]} == {"D2": True, "D1": False}
     md = (folder / "report.md").read_text()
     differing, shared = md.split("## Defects in every Trial")
-    assert "| D1 | major | mul is missing | j | 1/2 | 0/2 |" in differing
+    assert (
+        "| D1 | major | mul is missing | j | 1/2 · found 1, checked only 0 "
+        "| 0/2 · found 0, checked only 0 |" in differing
+    )
     assert "| D2 |" not in differing
-    assert "| D2 | critical | add loses data | j | 2/2 | 2/2 |" in shared
+    assert (
+        "| D2 | critical | add loses data | j | 2/2 · found 0, checked only 2 "
+        "| 2/2 · found 1, checked only 1 |" in shared
+    )
 
 
 def test_a_defect_is_as_severe_as_the_judges_voted(experiment, cli, no_models):
@@ -776,3 +788,17 @@ def test_checks_that_no_trial_passed_are_flagged(experiment, cli, no_models):
     trial(folder, "alpha-2", checks=True)
     cli("report", settings)
     assert "No Trial passed the checks" not in (folder / "report.md").read_text()
+
+
+def test_checks_saved_before_named_checks_report_as_one_check(saved, cli, no_models):
+    settings, folder = saved
+    cli("report", settings)
+    data = json.loads((folder / "report.json").read_text())
+    v1 = data["variants"][0]
+    assert v1["quality"]["by_check"] == {
+        "checks": {"passed": 1, "ran": 2, "trials": 3, "fails_on_base": False}
+    }
+    assert {t["trial"]: t["checks"] for t in data["trials"]}["v1-2"] == {"checks": "failed"}
+    md = (folder / "report.md").read_text()
+    assert "## Checks" not in md
+    assert "| v1 | 2/3 | 1/3 |" in md

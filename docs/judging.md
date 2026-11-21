@@ -47,7 +47,9 @@ those files.
   or Copilot CLI agent in a throwaway copy of the workspace with an empty
   config folder. The build's commits are folded into uncommitted changes on the
   base commit, since commit messages can name the model. It can open files,
-  run the checks and write a test to reproduce a problem. When the workspace is
+  run the checks and write a test to reproduce a problem. `copy_setup` runs in
+  the copy before the Judge starts (see
+  [settings.md](settings.md#where-the-checks-run)). When the workspace is
   not there (after `clean`, or when the results folder was copied from another
   machine), it gets the base commit with the Trial's saved diff applied
   instead, which leaves out files git ignores. That needs `repo` to hold the
@@ -132,6 +134,64 @@ result can stand clear of a coin toss. When `max_pairs` is larger than the
 number of Trials, Trials are used in more than one pair; those pairs are not
 independent, so the result is then more confident than it should be.
 
+## Categories
+
+Every Finding has a category as well as a severity:
+
+- **behaviour:** the shipped code does the wrong thing, or not what the plan asks.
+- **test-gap:** the code is correct, but its tests would miss a regression.
+- **scope:** the build and the plan disagree about what to build, including a
+  plan that assumes something false about the base commit.
+
+A Verdict with a missing or unknown category fails, like one with a bad
+severity, and is asked for again next time. The merge Judge sees each
+Finding's category and names each new Defect's; a Defect it names none for
+takes the category most of its Findings have. Findings of different
+categories are never merged into one Defect: a merge reply that tries is
+rejected and asked for again. The report weighs Variants on behaviour Defects
+only, so several test gaps cannot outvote one bug (see
+[report.md](report.md)).
+
+## Merging and the base commit
+
+The merge keeps two Findings apart when in doubt, because a wrong merge cannot
+be undone: Defects keep their ids. One rule joins Findings: test-gap Findings
+that one added test would close are the same Defect. A Defect keeps the key of
+every Finding merged into it.
+
+In the check step, every Judge that says a Trial has a Defect also says
+whether the base commit already had it: yes, no or unsure. An Agent Judge's
+copy holds the base commit in its history, so it is told how to read files as
+the base had them and how to stash the build to run the base; no separate
+checkout is made. An API Judge answers from the diff, so "unsure" is a normal
+answer there. A Defect is already in the base when more answers say yes than
+no, across every Judge and Trial, leaving out "unsure"; a tie is not in the
+base. The report lists such Defects apart and counts them for no Variant.
+
+## Guidance for the Judges
+
+To steer every Judge without rewriting a prompt, name a Markdown file in
+`judge_guidance`:
+
+```yaml
+judge_guidance: guidance.md     # beside the settings file
+```
+
+```markdown
+The base commit has no migrations folder yet; do not report that.
+A missing index on a foreign key is major.
+```
+
+Its text is added, under the heading "Guidance for this Experiment", to the
+end of every judging prompt: find, merge, check and compare, for Agent and API
+Judges alike. A Judge's own `prompt` replaces only the shipped find prompt,
+for that Judge alone; the guidance is added to it too, and reaches the steps
+whose prompts cannot be replaced. Changing the guidance file makes the next
+`judge` ask again for the Verdicts, Defect checks and Comparisons. Defects
+already merged keep their ids; only Findings not yet in a Defect are merged
+with the new guidance. Results judged before guidance was set are not judged
+again while the guidance stays unset.
+
 ## Watching judge
 
 `judge` first measures each finished Trial (line counts, cost, and the checks
@@ -177,7 +237,34 @@ Verdicts from two prompts; Defect checks and Comparisons are redone when
 build-bench's own prompt for them changes. The shipped prompts are in
 [src/build_bench/prompts/](../src/build_bench/prompts/): `judge.md` for
 Verdicts (a Judge's own `prompt` replaces it), `merge.md`, `check.md` and
-`compare.md`.
+`compare.md`. Changing `judge_guidance` counts as a change to every one of
+them.
+
+## What runs again
+
+`judge` keeps what it saved and redoes only what has gone out of date:
+
+- **The checks** run again when a Check, `env`, `copy_setup`, `runtime_check`
+  or `checks_in_place` has changed since they last ran, or when they could not
+  run last time (a failed `copy_setup`, say). The transcript and
+  line measurements are kept, and no Judge is asked again for that alone.
+  Measurements saved before build-bench recorded these settings are kept while
+  the settings are at their defaults and the checks command is the same.
+- **Verdicts** run again when the Judge's find prompt or `judge_guidance` has
+  changed, and **Defect checks** and **Comparisons** when their prompt or the
+  guidance has. A failed step always runs again.
+- **The merge** places only Findings not yet in a Defect; existing Defects keep
+  their ids.
+- Nothing else is part of any key: a results folder's plan is the copy saved
+  when it started, and cannot change.
+
+`judge --fresh` judges a results folder again from nothing: it removes the
+measurements, the checks' logs, the Verdicts, the Defects, the Defect checks
+and the Comparisons, then runs every step, so the Defect ids start again from
+`D1`. A Trial whose workspace `clean` removed keeps its measurements, as its
+checks could not run again. It is how to try new settings without building
+again. `all` does not take `--fresh`, because it always starts a new results
+folder.
 
 ## Why LiteLLM is pinned
 

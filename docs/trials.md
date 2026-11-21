@@ -26,7 +26,8 @@ and what is measured afterwards.
   not part of the Trial's time, and they use no tokens. A failing step fails
   the Trial before the agent starts.
 - **Checks on the base commit:** before the first Trial, `run` makes sure
-  `checks` passes on the base commit, and stops if it does not. See
+  `checks` passes on the base commit, and stops if it does not (or, with
+  `check_base: mark`, builds anyway and has the report mark it). See
   [settings.md](settings.md#checks-on-the-base-commit).
 - **Output:** everything that differs from the base commit, committed or not,
   as one diff that leaves out files git ignores (so what `pre_build` installs
@@ -103,7 +104,9 @@ Three things differ from Claude Code, and
   YAML file; put your own in a `presets/` folder beside the settings file
   (`presets/ruby.yaml` makes `languages: [ruby]` work).
 - **Checks:** whether `checks` passes, run in a throwaway copy of the
-  workspace, with its output in `checks.log`.
+  workspace (or in the workspace itself with `checks_in_place`; see
+  [settings.md](settings.md#where-the-checks-run)), with its output in
+  `checks.log`.
 
 Boxes a build ticks in the plan are not measured: they are the build's own
 claim, and a plan need not have any.

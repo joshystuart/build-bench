@@ -141,7 +141,7 @@ Each command takes a settings file; leave it out to use the nearest `.benchrc`.
 |---|---|
 | `build-bench all` | `run`, `judge` and `report`, one after the other. |
 | `build-bench run` | Builds every Trial. `--resume` finishes the missing and failed ones. |
-| `build-bench judge` | Measures and judges the Trials. Skips what is already done, so you can add a Judge later. |
+| `build-bench judge` | Measures and judges the Trials. Skips what is already done, so you can add a Judge later; `--fresh` judges again from nothing. |
 | `build-bench report` | Writes the report again. Calls no model. |
 | `build-bench clean` | Deletes the Trial workspaces and keeps the results. |
 
