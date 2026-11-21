@@ -371,6 +371,28 @@ def _differences(variants: list[dict], rows: list[dict]) -> list[dict]:
     return out
 
 
+def _agreement(rows: list[dict], judges: list[str]) -> list[dict]:
+    """For each Trial two or more Judges gave a Verdict on, how many Findings of
+    each severity worse than a nit each one reported, and how far apart they are."""
+    found = []
+    for r in rows:
+        counts = {j: r["findings"][j] for j in judges if j in r["findings"]}
+        if len(counts) < 2:
+            continue
+        spread = {
+            s: max(c[s] for c in counts.values()) - min(c[s] for c in counts.values())
+            for s in MERGED
+        }
+        found.append(
+            {
+                "trial": r["trial"],
+                "by_judge": {j: {s: c[s] for s in MERGED} for j, c in counts.items()},
+                "spread": spread,
+            }
+        )
+    return found
+
+
 def _is(row: dict, what: str) -> bool:
     return row["built"] if what == "built" else row["status"] == "finished"
 
@@ -638,6 +660,7 @@ def build_report(settings: Settings, folder: Path) -> dict:
         ),
         "variants": variants,
         "differences": _differences(variants, rows),
+        "agreement": _agreement(rows, judges),
         "defects": defect_rows if defects is not None else None,
         "comparisons": comparison_rows,
         "judges": judge_rows,
@@ -748,6 +771,10 @@ def _defect_table(
         ],
         note,
     )
+
+
+def _severities(counts: dict) -> str:
+    return " · ".join(str(counts[s]) for s in MERGED)
 
 
 def _comparison_result(c: dict) -> str:
@@ -910,6 +937,24 @@ def tables(data: dict) -> list[Table]:
                 "said which it would rather ship. A pair of Trials counts once, for the one "
                 "more of its Judges preferred. The result weighs the split against a coin "
                 "toss, in the same words as the Differences table.",
+            )
+        )
+    if data["agreement"]:
+        names = list(dict.fromkeys(j for a in data["agreement"] for j in a["by_judge"]))
+        found.append(
+            Table(
+                "Judge agreement",
+                ["Trial", *names, "Spread"],
+                [
+                    [a["trial"]]
+                    + [_severities(a["by_judge"][j]) if j in a["by_judge"] else "–" for j in names]
+                    + [_severities(a["spread"])]
+                    for a in data["agreement"]
+                ],
+                "The Findings each Judge reported in its own Verdict on the Trial, as "
+                "critical · major · minor. Spread is the most minus the fewest of each. A wide "
+                "spread means the Judges disagree about how bad the build is, so trust its "
+                "Defect counts less.",
             )
         )
     if data["judges"]:

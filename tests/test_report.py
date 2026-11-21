@@ -608,6 +608,43 @@ def test_the_report_says_why_a_trial_went_wrong(experiment, cli, no_models):
     assert "changed nothing</text>" in page  # flagged in the timeline too
 
 
+def test_how_far_the_judges_agree_is_shown_per_trial(experiment, cli, no_models):
+    judges = [
+        {"name": "gpt", "type": "api", "model": "openai/gpt-5"},
+        {"name": "gemini", "type": "api", "model": "gemini/gemini-3-pro"},
+    ]
+    settings = experiment(judges=judges)
+    folder = settings.parent / ".bench" / "results" / "demo" / "20260101-000000"
+    write(folder / "experiment.json", {"name": "demo"})
+    trial(
+        folder,
+        "alpha-1",
+        verdicts={
+            "gpt": ok("critical", "critical", "minor", "nit"),
+            "gemini": ok("major", "minor"),
+        },
+    )
+    # One Verdict is not a disagreement.
+    trial(folder, "alpha-2", verdicts={"gpt": ok("critical")})
+    assert cli("report", settings)[0] == 0
+    data = json.loads((folder / "report.json").read_text())
+    assert data["agreement"] == [
+        {
+            "trial": "alpha-1",
+            "by_judge": {
+                "gpt": {"critical": 2, "major": 0, "minor": 1},
+                "gemini": {"critical": 0, "major": 1, "minor": 1},
+            },
+            "spread": {"critical": 2, "major": 1, "minor": 0},
+        }
+    ]
+    md = (folder / "report.md").read_text()
+    assert (
+        "| Trial | gpt | gemini | Spread |\n|---|---|---|---|\n| alpha-1 | 2 · 0 · 1 | 0 · 1 · 1 | 2 · 1 · 0 |\n\n"
+        in md
+    )
+
+
 def test_judge_cost_and_time_are_apart_from_the_build(saved, cli, no_models):
     settings, folder = saved
     cli("report", settings)

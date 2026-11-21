@@ -50,6 +50,11 @@ averages, because they were spent.
   set: how many pairs of Trials were compared and how often each Variant's
   build was preferred. A pair counts once, for the build more of its Judges
   preferred than the other.
+- **Judge agreement:** one line per Trial that two or more Judges gave a
+  Verdict on: the Findings worse than a nit each Judge reported, as critical ·
+  major · minor, and the spread (the most minus the fewest of each). When one
+  Judge finds 2 critical problems where another finds none, trust that Trial's
+  Defect counts less.
 - **Judges:** each Judge's Verdicts, Defect checks, Comparisons, failures,
   cost and time, kept apart from the build numbers. Only the Judges in the
   settings file are listed and counted: what a Judge since removed left in the
