@@ -507,6 +507,10 @@ def test_another_judge_merges_when_the_merge_judge_fails(experiment, fake, cli, 
         "reason": "RuntimeError: merge broke",
     } in (data["failed_judging"])
 
+    # Judging again with nothing new to merge keeps the merge, and its failed try, as they were.
+    assert cli("judge", settings)[0] == 0
+    assert saved(settings, "defects.json") == merged
+
 
 def denied(model: str) -> litellm.PermissionDeniedError:
     import httpx

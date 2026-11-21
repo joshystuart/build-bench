@@ -902,15 +902,20 @@ def merge(
             defects.append({**defect, "findings": kept})
     placed = {key for defect in defects for key in defect["findings"]}
     pending = {f"F{n}": key for n, key in enumerate((k for k in found if k not in placed), 1)}
+    # Cost and time spent before carry over only to the Judge that spent them.
+    mine = saved.get("judge") == j.name
     record = _record(
         j,
-        cost_usd=saved.get("cost_usd"),
-        seconds=saved.get("seconds"),
+        cost_usd=saved.get("cost_usd") if mine else None,
+        seconds=saved.get("seconds") if mine else None,
         next_id=saved.get("next_id", 1),
         defects=_with_severity(defects, found),
     )
     if not pending:
         board.step("merge", [], f"no new Findings to merge ({len(defects)} Defect(s) so far)")
+        if saved:
+            # Still the merge of the Judge that made it, with the tries before it.
+            record = {**saved, "defects": record["defects"], "reason": None}
         record["status"] = "ok"
         write_json(target, record)
         return True
