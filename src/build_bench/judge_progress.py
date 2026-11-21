@@ -22,6 +22,8 @@ from .progress import BAR, STALL_SECONDS, Line, Screen, Stream, _limit, bar, clo
 from .settings import Judge, Settings
 from .transcript import default_prices
 
+#: The states an ask ends in.
+ENDED = ("ok", "failed", "skipped")
 HOW_TO_STOP = "Ctrl+C stops judging; `build-bench judge` again carries on from what is saved."
 
 
@@ -35,7 +37,7 @@ class Ask:
     stream: Path | None = None
     #: What a running ask is doing, when there is no stream to say.
     doing: str = "waiting for the reply"
-    state: str = "waiting"  # waiting | running | ok | failed
+    state: str = "waiting"  # waiting | running | ok | failed | skipped
     reason: str = ""
     started: float | None = None
     seconds: float | None = None
@@ -63,6 +65,8 @@ class Board:
         self.marks = dict.fromkeys(names, "")
         self.name = ""
         self.asks: list[Ask] = []
+        #: Judges sent no more asks in this `judge`, and why.
+        self.stopped: dict[str, str] = {}
         self._lock = threading.Lock()
         self._streams: dict[Path, tuple[tuple[int, int], Stream]] = {}
 
@@ -89,6 +93,13 @@ class Board:
             self.marks[name] = f"0/{len(asks)}" if asks else "✓"
         self.say(f"[judge] {name}: {line}")
 
+    def add(self, ask: Ask) -> None:
+        """One more ask for the step under way."""
+        with self._lock:
+            self.asks.append(ask)
+            done = sum(a.state in ENDED for a in self.asks)
+            self.marks[self.name] = f"{done}/{len(self.asks)}"
+
     def close(self) -> None:
         with self._lock:
             self._end_step()
@@ -101,7 +112,15 @@ class Board:
         self.marks[self.name] = f"✗ {failed} failed" if failed else "✓"
 
     def asking(self, ask: Ask, work: Callable[[], dict]) -> dict:
-        """Do one ask: `work` returns the saved record, whose status says how it ended."""
+        """Do one ask: `work` returns the saved record, whose status says how it ended.
+
+        An ask of a Judge stopped in this `judge` is skipped: `work` is not called
+        and nothing is saved. A record with `stops_judge` set stops its Judge."""
+        name = ask.judge.name if ask.judge else None
+        with self._lock:
+            if name in self.stopped:
+                ask.state = "skipped"
+                return {"status": "skipped", "reason": f"{name} was stopped"}
         ask.state, ask.started = "running", time.time()
         record: dict = {"status": "failed", "reason": "stopped"}
         try:
@@ -113,9 +132,22 @@ class Board:
             ask.state = "ok" if ok else "failed"
             with self._lock:
                 if self.name and ask in self.asks:
-                    done = sum(a.state in ("ok", "failed") for a in self.asks)
+                    done = sum(a.state in ENDED for a in self.asks)
                     self.marks[self.name] = f"{done}/{len(self.asks)}"
+        if record.get("stops_judge") and name is not None:
+            self.stop_judge(name, ask.reason)
         return record
+
+    def stop_judge(self, name: str, reason: str) -> None:
+        """Send Judge `name` no more asks in this `judge`, and say so once."""
+        with self._lock:
+            if name in self.stopped:
+                return
+            self.stopped[name] = reason
+        self.say(
+            f"[judge stopped] {name}: {reason}. No more asks go to {name} in this "
+            "`build-bench judge`; fix the cause and run it again."
+        )
 
     # --- The display ----------------------------------------------------------------
 
@@ -144,13 +176,14 @@ class Board:
         ]
         if not name:
             return head
-        count = {s: sum(a.state == s for a in asks) for s in ("ok", "running", "failed")}
-        ended = count["ok"] + count["failed"]
+        count = {s: sum(a.state == s for a in asks) for s in ("ok", "running", *ENDED)}
+        ended = sum(count[s] for s in ENDED)
         head.append(
             (
                 f"{name:<{pad}}[{bar(ended / len(asks) if asks else 1, BAR)}]  "
                 f"{count['ok']}/{len(asks)} done · {count['running']} running · "
-                f"{count['failed']} failed",
+                f"{count['failed']} failed"
+                + (f" · {count['skipped']} skipped" if count["skipped"] else ""),
                 "bold",
             )
         )
@@ -166,6 +199,14 @@ class Board:
             for a in asks
             if a.state == "ok"
         ] + [(f"{a.label:<{pad}}failed: {a.reason}", "red") for a in asks if a.state == "failed"]
+        finished += [
+            (
+                f"{a.label:<{pad}}skipped: {a.judge.name if a.judge else 'its Judge'} was stopped",
+                "dim",
+            )
+            for a in asks
+            if a.state == "skipped"
+        ]
         waiting = [a.label for a in asks if a.state == "waiting"]
         tail: list[Line] = (
             [(" " * pad + "waiting: " + ", ".join(waiting), "dim")] if waiting else []
@@ -174,7 +215,7 @@ class Board:
         if len(lines) > height and finished:
             folded = [
                 f"{word}: " + ", ".join(a.label for a in asks if a.state == state)
-                for state, word in (("ok", "done"), ("failed", "failed"))
+                for state, word in (("ok", "done"), ("failed", "failed"), ("skipped", "skipped"))
                 if any(a.state == state for a in asks)
             ]
             lines = head + running + [(" " * pad + " · ".join(folded), "dim")] + tail

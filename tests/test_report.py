@@ -27,6 +27,7 @@ def trial(
     tokens=1000,
     seconds=600.0,
     wait=0.0,
+    idle=(),
     subagents=(),
     lines=(10, 2, 5, 0),
     checks=True,
@@ -59,6 +60,11 @@ def trial(
             "cost_usd": cost,
             "tokens": {"total": tokens},
             "total_seconds": seconds,
+            "active_seconds": seconds - sum(e - s for s, e in idle),
+            "idle_seconds": sum(e - s for s, e in idle),
+            "idle_intervals": [list(i) for i in idle],
+            "ends_idle": bool(idle) and seconds - idle[-1][1] < 300,
+            "most_subagents_at_once": min(len(subagents), 1),
             "wait_seconds": wait,
             "wait_intervals": [[s, e] for _, s, e in subagents],
             "subagents": [{"name": n, "start": s, "end": e} for n, s, e in subagents],
@@ -158,6 +164,8 @@ def saved(experiment):
         cost=3.0,
         tokens=3000,
         seconds=1200,
+        # Waited idle for a wakeup at the end, long after its work was done.
+        idle=[(800.0, 1150.0)],
         lines=(20, 4, 15, 0),
         checks=False,
         active=2,
@@ -242,7 +250,11 @@ def test_averages_ranges_and_counts(saved, cli, no_models):
     assert v2["build"]["cost_usd"]["n"] == 2
 
     md = (folder / "report.md").read_text()
-    assert "| v1 | 2/3 | 2 (1–3) | 2000 (1000–3000) | 15 (10–20) | 0.5 (0–1) |" in md
+    assert (
+        "| v1 | 2/3 | 2 (1–3) | 2000 (1000–3000) | 12.09 (10–14.17) | 15 (10–20) | 0.5 (0–1) |"
+        in md
+    )
+    assert v1["build"]["active_minutes"]["mean"] == 12.09
     assert "| v2 | 2/2 | 3 (2–4) |" in md
 
 
@@ -317,7 +329,7 @@ def test_a_difference_is_weighed_against_the_spread_between_trials(saved, cli, n
     assert difference["measures"]["defects"]["lower"] == "v2"
     assert difference["measures"]["defects"]["by"] == 1.0
     # Every Trial took the same time.
-    assert difference["measures"]["total_minutes"]["lower"] is None
+    assert difference["measures"]["active_minutes"]["lower"] is None
     md = (folder / "report.md").read_text()
     assert "| v1 and v2 | v2 lower by 1: clear | v1 lower by 1: clear | the same |" in md
 
@@ -501,7 +513,9 @@ def test_failures_are_listed_and_left_out(saved, cli, no_models):
     md = (folder / "report.md").read_text()
     assert "## Failed Trials\n\n- v1-3: crashed: exit code 3" in md
     assert (
-        "## Failed judging\n\n- v2-1 by j: finding 1 has no title\n"
+        "## Failed judging\n\n"
+        "`build-bench judge` tries these again; it keeps every step that succeeded.\n\n"
+        "- v2-1 by j: finding 1 has no title\n"
         "- v2-1 by j (defect check): no answer for D1\n"
     ) in md
     data = json.loads((folder / "report.json").read_text())
@@ -511,6 +525,31 @@ def test_failures_are_listed_and_left_out(saved, cli, no_models):
     assert data["empty_trials"] == []
     assert "## Trials that changed nothing" not in md
     assert "What went wrong" in (folder / "report.html").read_text()
+
+
+def test_a_failed_merge_leaves_the_defect_counts_unknown(saved, cli, no_models):
+    settings, folder = saved
+    merged = json.loads((folder / "defects.json").read_text())
+    write(folder / "defects.json", {**merged, "status": "failed", "reason": "timeout"})
+    assert cli("report", settings)[0] == 0
+    md = (folder / "report.md").read_text()
+    # Warned before anything else, not only in the list of failures at the end.
+    first = md.split("\n## ")[0]
+    assert (
+        "- **Merging the Findings into Defects failed** (by j: timeout), so no Defect count "
+        "is known. `build-bench judge` tries it again."
+    ) in first
+    quality = next(t for t in md_tables(md) if t[0][2] == "Checks passed")
+    assert quality[1][3:6] == ["n/a, merge failed"] * 3
+    assert quality[1][6] != "n/a, merge failed"  # nits are not merged
+    differences = next(t for t in md_tables(md) if t[0][0] == "Variants")
+    assert differences[1][1] == "n/a, merge failed"
+    assert "## Defects" not in md
+    data = json.loads((folder / "report.json").read_text())
+    assert data["merge_failed"] == {"judge": "j", "reason": "timeout"}
+    assert data["defects"] is None
+    assert data["trials"][0]["major"] is None
+    assert "n/a, merge failed" in (folder / "report.html").read_text()
 
 
 def test_the_report_says_why_a_trial_went_wrong(experiment, cli, no_models):
@@ -540,10 +579,24 @@ def test_the_report_says_why_a_trial_went_wrong(experiment, cli, no_models):
     ) in md
     assert (
         "## Trials that changed nothing\n\n"
-        "These Trials finished but left no code changes. Their numbers are in the averages.\n\n"
+        "These Trials finished but left no code changes, so they count as not built: no Judge "
+        "was asked about them, their checks are not counted, and only their cost and time are "
+        "in the averages.\n\n"
         "- alpha-1: “I stopped the build before it started. The repository has no git remote.”"
     ) in md
     assert "alpha-3" not in md.split("## Trials that changed nothing")[1]
+
+    # It counts as not built, and as not passing the checks it passed, but its cost and
+    # time were spent all the same.
+    data = json.loads((folder / "report.json").read_text())
+    [variant] = data["variants"]
+    assert (variant["finished"], variant["built"]) == (2, 1)
+    assert variant["build"]["cost_usd"]["n"] == 2
+    assert variant["output"]["prod_added"]["n"] == 1
+    assert variant["quality"]["checks"] == {"passed": 1, "ran": 1, "trials": 3}
+    empty = next(r for r in data["trials"] if r["trial"] == "alpha-1")
+    assert empty["checks"] == {"checks": "– (no changes)"} and empty["checks_passed"] is None
+    assert "| alpha | 1/3 | 1/3 |" in md
 
     page = (folder / "report.html").read_text()
     problems = page.split("<h2>What went wrong</h2>")[1].split("</ul>")[0]
@@ -553,6 +606,44 @@ def test_the_report_says_why_a_trial_went_wrong(experiment, cli, no_models):
     # The whole message is one click away, escaped.
     assert "add a remote &amp; run it again." in problems
     assert "changed nothing</text>" in page  # flagged in the timeline too
+
+
+def test_how_far_the_judges_agree_is_shown_per_trial(experiment, cli, no_models):
+    judges = [
+        {"name": "gpt", "type": "api", "model": "openai/gpt-5"},
+        {"name": "gemini", "type": "api", "model": "gemini/gemini-3-pro"},
+    ]
+    settings = experiment(judges=judges)
+    folder = settings.parent / ".bench" / "results" / "demo" / "20260101-000000"
+    write(folder / "experiment.json", {"name": "demo"})
+    trial(
+        folder,
+        "alpha-1",
+        verdicts={
+            "gpt": ok("critical", "critical", "minor", "nit"),
+            "gemini": ok("major", "minor"),
+        },
+    )
+    # One Verdict is not a disagreement, and a build that changed nothing has nothing to judge.
+    trial(folder, "alpha-2", verdicts={"gpt": ok("critical")})
+    trial(folder, "alpha-3", diff="", verdicts={"gpt": ok("major"), "gemini": ok()})
+    assert cli("report", settings)[0] == 0
+    data = json.loads((folder / "report.json").read_text())
+    assert data["agreement"] == [
+        {
+            "trial": "alpha-1",
+            "by_judge": {
+                "gpt": {"critical": 2, "major": 0, "minor": 1},
+                "gemini": {"critical": 0, "major": 1, "minor": 1},
+            },
+            "spread": {"critical": 2, "major": 1, "minor": 0},
+        }
+    ]
+    md = (folder / "report.md").read_text()
+    assert (
+        "| Trial | gpt | gemini | Spread |\n|---|---|---|---|\n| alpha-1 | 2 · 0 · 1 | 0 · 1 · 1 | 2 · 1 · 0 |\n\n"
+        in md
+    )
 
 
 def test_judge_cost_and_time_are_apart_from_the_build(saved, cli, no_models):
@@ -603,6 +694,7 @@ def test_flags(saved, cli, no_models):
     md = (folder / "report.md").read_text()
     assert "Login: **subscription**" in md
     assert "**Ran alongside other Trials:** v1-2 (2 at once)" in md
+    assert "**Waited idle:** v1-2 (5.8 min, at the end). The main agent had ended its turn" in md
     assert "**Mixed Claude Code versions:** 2.1.319, 2.1.320" in md
 
 

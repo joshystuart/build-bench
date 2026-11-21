@@ -128,6 +128,29 @@ def test_one_trial_end_to_end(experiment, fake, cli, target_repo):
     assert (trial / "summary.md").read_text() == "Fake summary: all done."
 
 
+def test_wakeup_tools_are_denied_unless_the_settings_say_otherwise(experiment, fake, cli):
+    def denied(settings) -> list[str | None]:
+        assert cli("run", settings)[0] == 0
+        found = []
+        for call in fake.calls()[-len(yaml.safe_load(settings.read_text())["variants"]) :]:
+            argv = call["argv"]
+            found.append(
+                argv[argv.index("--disallowedTools") + 1] if "--disallowedTools" in argv else None
+            )
+        return found
+
+    # A pending wakeup keeps a headless Trial running long after its work is done.
+    assert denied(experiment()) == ["ScheduleWakeup,CronCreate"]
+    variants = [
+        {"name": "own", "prompt": "prompts/build.md", "model": "m", "disallowed_tools": []},
+        {"name": "shared", "prompt": "prompts/build.md", "model": "m"},
+    ]
+    assert denied(experiment(variants=variants, disallowed_tools=["WebFetch", "Monitor"])) == [
+        None,
+        "WebFetch,Monitor",
+    ]
+
+
 def test_an_experiment_with_no_plan_runs(experiment, fake, cli):
     settings = experiment(
         plan=None,
@@ -435,6 +458,29 @@ def test_a_trial_that_hits_its_budget_is_failed(experiment, fake, cli):
     assert call["argv"][call["argv"].index("--max-budget-usd") + 1] == "0.5"
     status = json.loads((results_folder(settings) / "trials/alpha-1/status.json").read_text())
     assert status["reason"] == "budget: reached the spending limit of $0.5"
+
+
+def test_work_left_on_another_branch_fails_the_trial(experiment, fake, cli):
+    fake.set(mode="elsewhere")
+    settings = experiment()
+    code, out, _ = cli("run", settings)
+    assert code == 1
+    trial = results_folder(settings) / "trials" / "alpha-1"
+    reason = (
+        "the build left its work on the branch `feat/fake` (2 commit(s) past the "
+        "checked-out one), so its diff is empty"
+    )
+    assert json.loads((trial / "status.json").read_text())["reason"] == reason
+    assert f"[fail]  alpha-1 {reason}" in out
+
+
+def test_a_build_that_changed_nothing_still_finishes(experiment, fake, cli):
+    fake.set(mode="nothing")
+    settings = experiment()
+    assert cli("run", settings)[0] == 0
+    trial = results_folder(settings) / "trials" / "alpha-1"
+    assert json.loads((trial / "status.json").read_text())["status"] == "finished"
+    assert (trial / "diff.patch").read_text() == ""
 
 
 # --- Many Trials -------------------------------------------------------------------

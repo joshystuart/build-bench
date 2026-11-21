@@ -21,7 +21,7 @@ from importlib.resources import files
 from jinja2 import Environment, PackageLoader, StrictUndefined
 from markupsafe import Markup, escape
 
-from .report import failed_judging_lines, first_paragraph, flag_lines, tables
+from .report import RETRY, failed_judging_lines, first_paragraph, flag_lines, tables
 
 _TEMPLATES = files("build_bench") / "templates"
 
@@ -121,7 +121,10 @@ def _problems(data: dict) -> list[Problem]:
         why = f"Failed: {f['reason'] or 'no reason was recorded'}"
         out.append(_problem(f["trial"], "failed", why, f["final_message"]))
     for f in data["empty_trials"]:
-        why = "Finished but left no code changes. Its numbers are in the averages."
+        why = (
+            "Finished but left no code changes, so it counts as not built: no Judge was "
+            "asked about it, and only its cost and time are in the averages."
+        )
         out.append(_problem(f["trial"], "changed nothing", why, f["final_message"]))
     return out
 
@@ -189,21 +192,26 @@ def _timeline(rows: list[dict]) -> Timeline:
         subs = t["subagents"]
         note = f"{_clock(t['total_seconds'])} · {len(subs)} subagent{'s' * (len(subs) != 1)}"
         bad = bool(r.get("changed_nothing"))
+        if r.get("idle_minutes"):
+            note += f" · idle {_clock(r['idle_minutes'] * 60)}"
         if bad:
             note += " · changed nothing"
         group = TrialGroup(r["trial"], note, bad, y)
         groups.append(group)
         y += group_h
 
-        total, waits = t["total_seconds"], t["waits"]
+        total, waits, idle = t["total_seconds"], t["waits"], t.get("idle", [])
         waited = total - sum(e - s for s, e in _working(total, waits))
+        idled = sum(e - s for s, e in idle)
         tip = [f"{_clock(total)} in all", f"Main agent · {r['trial']}"]
         if subs:
             share = round(100 * waited / total) if total else 0
             tip.append(
-                f"Working {_clock(total - waited)} · waiting on subagents "
+                f"Working {_clock(total - waited - idled)} · waiting on subagents "
                 f"{_clock(waited)} ({share}%)"
             )
+        if idle:
+            tip.append(f"Idle, nothing running {_clock(idled)}")
         tip.append(f"Cost {_money(t.get('main_cost_usd'))}")
         main = agent(
             "Main agent",
@@ -211,7 +219,8 @@ def _timeline(rows: list[dict]) -> Timeline:
             x(0),
             x(total),
             y,
-            [bar("main", x(s), x(e), y) for s, e in _working(total, waits)],
+            # Idle waits are left blank: nothing was running.
+            [bar("main", x(s), x(e), y) for s, e in _working(total, waits + idle)],
         )
         main.waits = [
             Wait(x(s) + 2, max(x(e) - 2, x(s) + 2), y + row_h / 2)
@@ -235,6 +244,7 @@ def _timeline(rows: list[dict]) -> Timeline:
             table.append(TimeRow(r["trial"], s["name"], s["start"], s["end"], s.get("cost_usd")))
         waiting = "Main agent waiting on subagents"
         table += [TimeRow(r["trial"], waiting, s, e, None) for s, e in waits]
+        table += [TimeRow(r["trial"], "Main agent idle", s, e, None) for s, e in idle]
 
     bottom = y + 4
     ticks = []
@@ -261,6 +271,7 @@ def html(data: dict) -> str:
         tables=tables(data),
         timeline=_timeline(timed) if timed else None,
         failed_judging=failed_judging_lines(data),
+        retry=RETRY.replace("`", ""),
         css=Markup((_TEMPLATES / "report.css").read_text()),
         script=Markup((_TEMPLATES / "report.js").read_text()),
     )

@@ -51,6 +51,14 @@ class Price(_Strict):
 #: The coding agents build-bench can start.
 AgentKind = Literal["claude", "copilot"]
 
+#: Tools each agent is denied when the settings name none. A headless Trial
+#: has no one to wake it, and a pending wakeup keeps it running, idle, long
+#: after the work is done.
+DEFAULT_DISALLOWED_TOOLS: dict[str, list[str]] = {
+    "claude": ["ScheduleWakeup", "CronCreate"],
+    "copilot": [],
+}
+
 
 class Variant(_Strict):
     name: str = Field(pattern=NAME_PATTERN)
@@ -62,6 +70,8 @@ class Variant(_Strict):
     config: Path | None = None
     skills: list[Path] = []
     repeats: int = Field(default=1, ge=1)
+    #: Tools this Variant's agent may not use; replaces the Experiment's list.
+    disallowed_tools: list[str] | None = None
 
 
 class CheckCommand(_Strict):
@@ -119,6 +129,9 @@ class Settings(_Strict):
     claude_version: str | None = None
     copilot_version: str | None = None
     limits: Limits = Limits()
+    #: Tools no agent may use, Trials and Agent Judges alike; the default for
+    #: each agent is in `DEFAULT_DISALLOWED_TOOLS`.
+    disallowed_tools: list[str] | None = None
     languages: list[str] = []
     test_paths: list[str] = []
     ignore_paths: list[str] = []
@@ -190,6 +203,15 @@ class Settings(_Strict):
     def environment(self) -> dict[str, str]:
         """The environment for the commands and agents the Experiment starts."""
         return {**os.environ, **self.env}
+
+    def denied_tools(self, agent: str, variant: Variant | None = None) -> list[str]:
+        """The tools an agent may not use: the Variant's list, else the
+        Experiment's, else the agent's default."""
+        if variant is not None and variant.disallowed_tools is not None:
+            return variant.disallowed_tools
+        if self.disallowed_tools is not None:
+            return self.disallowed_tools
+        return DEFAULT_DISALLOWED_TOOLS.get(agent, [])
 
     def judge_limits(self, judge: Judge) -> Limits:
         """A Judge's own limits win; anything it leaves out comes from the Experiment."""

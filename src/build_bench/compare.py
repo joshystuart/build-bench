@@ -160,7 +160,7 @@ def compare(
             pair = f"{first.id} with {second.id} by {j.name}"
             if record["status"] == "ok":
                 board.say(f"[compared] {pair}")
-            else:
+            elif record["status"] == "failed":
                 board.say(f"[compare failed] {pair}: {record['reason']}")
 
     in_parallel(one, todo, settings.concurrency, agent, board.say)

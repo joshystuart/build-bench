@@ -21,6 +21,7 @@ claude -p \
   --permission-mode bypassPermissions \
   --session-id <a new uuid> \
   --max-budget-usd 40 \
+  --disallowedTools ScheduleWakeup,CronCreate \
   < prompt.md
 ```
 
@@ -40,6 +41,8 @@ For an API key, set `ANTHROPIC_API_KEY=<key>` in place of
   init event reported `"permissionMode": "bypassPermissions"`.
 - `--session-id` fixes the transcript's file name (see below).
 - `--max-budget-usd` is the spending limit (see "Limits").
+- `--disallowedTools` is the settings' `disallowed_tools` (by default
+  `ScheduleWakeup,CronCreate`); left out when the list is empty.
 
 ## Version
 
@@ -254,7 +257,8 @@ copilot -p "<the prompt>" \
   --allow-all --no-ask-user --no-auto-update \
   --output-format json \
   --model claude-sonnet-5.5 \
-  --effort high
+  --effort high \
+  --deny-tool='shell(git push)'
 ```
 
 - `-p` runs one headless turn and exits. The prompt is an argument, not
@@ -263,6 +267,9 @@ copilot -p "<the prompt>" \
 - `--allow-all` allows every tool, path and URL without asking, and
   `--no-ask-user` stops the agent asking questions nobody will answer.
 - `--no-auto-update` keeps the installed version, so a pin holds.
+- `--deny-tool`, once for each of the settings' `disallowed_tools` (none by
+  default). `copilot --help` says deny rules win over every allow, including
+  `--allow-all`.
 - `--output-format json` writes one JSON event per line, each with `type`,
   `data`, `id`, `timestamp` and `parentId`. The last is
   `{"type":"result","exitCode":0,"usage":{...}}`. It holds no summary, no

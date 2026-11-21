@@ -13,14 +13,17 @@ from typing import Any
 from .judge import CATEGORIES, MERGED, PRESENT, SEVERITIES
 from .results import read_json, saved_trials, write_json
 from .settings import Settings
+from .transcript import IDLE_SECONDS
 
 #: (key, label, decimals) for each per-Trial number, in table order.
 BUILD = [
     ("cost_usd", "Cost ($)", 4),
     ("tokens_total", "Tokens", 0),
-    ("total_minutes", "Time (min)", 2),
+    ("active_minutes", "Active time (min)", 2),
+    ("total_minutes", "Wall time (min)", 2),
     ("wait_minutes", "Waiting on subagents (min)", 2),
     ("subagents", "Subagents", 0),
+    ("subagents_at_once", "Most subagents at once", 0),
 ]
 OUTPUT = [
     ("prod_added", "Prod lines +", 0),
@@ -32,7 +35,7 @@ OUTPUT = [
 COMPARED = [
     ("defects", "Behaviour defects per Trial", 2),
     ("cost_usd", "Cost ($)", 4),
-    ("total_minutes", "Time (min)", 2),
+    ("active_minutes", "Active time (min)", 2),
 ]
 #: A difference is clear when chance alone gives one as large less than 1 time
 #: in 20, and possible when less than 1 time in 5.
@@ -44,6 +47,10 @@ QUALITY = [(s, f"{s.capitalize()} defects", 2) for s in MERGED] + [("nit", "Nits
 CATEGORY_LABELS = {"behaviour": "Behaviour", "test-gap": "Test gaps", "scope": "Scope"}
 #: The category of a Defect merged before Defects had categories.
 UNCATEGORISED = "uncategorised"
+#: Each Check's result in a Trial that changed nothing.
+NO_CHANGES = "– (no changes)"
+#: What a Defect count reads when merging the Findings failed.
+MERGE_FAILED = "n/a, merge failed"
 
 
 def _round(value: float | None, decimals: int) -> float | int | None:
@@ -126,6 +133,7 @@ def trial_row(
     timings = read_json(trial.folder / "timings.json") or {}
     line_counts = m.get("lines") or {}
     checks = m.get("checks") or {}
+    row_status = status.get("status")
     row: dict[str, Any] = {
         "trial": status.get("trial", trial.id),
         "variant": status.get("variant", trial.variant),
@@ -135,26 +143,38 @@ def trial_row(
         "agent": status.get("agent", "claude"),
         # Trials saved before Copilot was an agent hold only `claude_version`.
         "agent_version": status.get("agent_version") or status.get("claude_version"),
-        "max_active": timings.get("max_active"),
+        # How many Trials, this one included, were building at one moment.
+        "trials_at_once": timings.get("max_active"),
         "measured": bool(m),
         "cost_usd": m.get("cost_usd"),
         "cost_basis": m.get("cost_basis"),
         "tokens_total": (m.get("tokens") or {}).get("total"),
+        "active_minutes": m["active_seconds"] / 60 if "active_seconds" in m else None,
         "total_minutes": m["total_seconds"] / 60 if "total_seconds" in m else None,
+        "idle_minutes": m["idle_seconds"] / 60 if "idle_seconds" in m else None,
+        "ends_idle": bool(m.get("ends_idle")),
         "wait_minutes": m["wait_seconds"] / 60 if "wait_seconds" in m else None,
         "subagents": len(m["subagents"]) if "subagents" in m else None,
+        "subagents_at_once": m.get("most_subagents_at_once"),
         "prod_added": line_counts.get("prod_added"),
         "prod_removed": line_counts.get("prod_removed"),
         "test_added": line_counts.get("test_added"),
         "test_removed": line_counts.get("test_removed"),
         "checks_passed": None,
         "checks": {
-            # A Check that also fails on the base commit says nothing about this build.
-            name: "fails on base" if name in fails_on_base and result != "passed" else result
+            # A Check that also fails on the base commit says nothing about this build,
+            # and a build that changed nothing passes whatever the base commit passes.
+            name: NO_CHANGES
+            if trial.changed_nothing
+            else "fails on base"
+            if name in fails_on_base and result != "passed"
+            else result
             for name, result in _each_check(checks).items()
         },
         "final_message": _text(trial.folder / "summary.md"),
-        "changed_nothing": _changed_nothing(trial.folder),
+        "changed_nothing": trial.changed_nothing,
+        # Finished with code changes: only these have Defects, lines and passed checks.
+        "built": row_status == "finished" and not trial.changed_nothing,
         "findings": {},
         "verdicts": {},
         "defect_checks": {},
@@ -162,7 +182,7 @@ def trial_row(
     }
     # The checks pass when every Check that passed on the base commit passes here.
     counted = [r for name, r in row["checks"].items() if name not in fails_on_base]
-    if counted:
+    if counted and not trial.changed_nothing:
         row["checks_passed"] = all(r == "passed" for r in counted)
     for key, _, decimals in BUILD + OUTPUT:
         row[key] = _round(row[key], decimals)
@@ -234,12 +254,6 @@ def _text(path: Path) -> str | None:
         return None
 
 
-def _changed_nothing(folder: Path) -> bool:
-    """The build left no code changes: its diff was saved, and is empty."""
-    diff = folder / "diff.patch"
-    return diff.is_file() and not diff.read_text(errors="replace").strip()
-
-
 def _timeline(m: dict) -> dict | None:
     if "total_seconds" not in m:
         return None
@@ -248,12 +262,21 @@ def _timeline(m: dict) -> dict | None:
         "total_seconds": m["total_seconds"],
         "main_cost_usd": main.get("cost_usd"),
         "waits": m.get("wait_intervals", []),
+        "idle": m.get("idle_intervals", []),
         "subagents": [
             {"name": s["name"], "start": s["start"], "end": s["end"], "cost_usd": s.get("cost_usd")}
             for s in m.get("subagents", [])
             if s.get("start") is not None
         ],
     }
+
+
+#: What the report says about the Trials that changed nothing.
+EMPTY = (
+    "These Trials finished but left no code changes, so they count as not built: no Judge "
+    "was asked about them, their checks are not counted, and only their cost and time are "
+    "in the averages."
+)
 
 
 def first_paragraph(text: str, limit: int = 400) -> str:
@@ -326,8 +349,10 @@ def _differences(variants: list[dict], rows: list[dict]) -> list[dict]:
         measures: dict[str, dict | None] = {}
         for key, _, decimals in COMPARED:
             column = "behaviour_defects" if key == "defects" else key
+            # Cost and time were spent by a build that changed nothing, too.
+            counts = "built" if key == "defects" else "finished"
             mine = [
-                [r[column] for r in rows if r["variant"] == name and r["status"] == "finished"]
+                [r[column] for r in rows if r["variant"] == name and _is(r, counts)]
                 for name in (a, b)
             ]
             one, other = ([v for v in values if v is not None] for values in mine)
@@ -344,6 +369,34 @@ def _differences(variants: list[dict], rows: list[dict]) -> list[dict]:
             }
         out.append({"variants": [a, b], "measures": measures})
     return out
+
+
+def _agreement(rows: list[dict], judges: list[str]) -> list[dict]:
+    """For each Trial two or more Judges gave a Verdict on, how many Findings of
+    each severity worse than a nit each one reported, and how far apart they are."""
+    found = []
+    for r in rows:
+        counts = {j: r["findings"][j] for j in judges if j in r["findings"]}
+        # A Verdict on a build that changed nothing, saved before such builds were
+        # skipped, says nothing about how good a build is.
+        if len(counts) < 2 or not r["built"]:
+            continue
+        spread = {
+            s: max(c[s] for c in counts.values()) - min(c[s] for c in counts.values())
+            for s in MERGED
+        }
+        found.append(
+            {
+                "trial": r["trial"],
+                "by_judge": {j: {s: c[s] for s in MERGED} for j, c in counts.items()},
+                "spread": spread,
+            }
+        )
+    return found
+
+
+def _is(row: dict, what: str) -> bool:
+    return row["built"] if what == "built" else row["status"] == "finished"
 
 
 def _comparisons(folder: Path, variants: list[dict], rows: list[dict], judges: list[str]):
@@ -397,7 +450,10 @@ def build_report(settings: Settings, folder: Path) -> dict:
     judges = [j.name for j in settings.judges]
     merged = read_json(folder / "defects.json")
     trials = saved_trials(folder)
-    defects = _defects(merged, trials, judges) if merged else None
+    # Findings a failed merge left out of every Defect would make the counts too
+    # low, so after a failed merge no Defect count is known.
+    merge_failed = bool(merged) and merged.get("status") != "ok"
+    defects = _defects(merged, trials, judges) if merged and not merge_failed else None
     # Each Check's result on the base commit, when `run` ran them there.
     on_base = _each_check(read_json(folder / "base-checks.json") or {})
     fails_on_base = {name for name, result in on_base.items() if result != "passed"}
@@ -413,13 +469,16 @@ def build_report(settings: Settings, folder: Path) -> dict:
         if not mine:
             continue
         done = [r for r in mine if r["status"] == "finished"]
+        built = [r for r in mine if r["built"]]
         variants.append(
             {
                 "name": name,
                 "trials": len(mine),
                 "finished": len(done),
+                "built": len(built),
+                # A build that changed nothing still spent its time and money.
                 "build": {k: aggregate([r[k] for r in done], d) for k, _, d in BUILD},
-                "output": {k: aggregate([r[k] for r in done], d) for k, _, d in OUTPUT},
+                "output": {k: aggregate([r[k] for r in built], d) for k, _, d in OUTPUT},
                 "quality": {
                     # Of every Trial, so one that failed to finish counts as not passing.
                     "checks": {
@@ -437,10 +496,10 @@ def build_report(settings: Settings, folder: Path) -> dict:
                         for name in check_names
                         if any(name in r["checks"] for r in rows)
                     },
-                    **{k: aggregate([r[k] for r in done], d) for k, _, d in QUALITY},
+                    **{k: aggregate([r[k] for r in built], d) for k, _, d in QUALITY},
                     # Defects one Trial has, of each category.
                     "categories": {
-                        c: aggregate([r["categories"].get(c) for r in done], 2) for c in CATEGORIES
+                        c: aggregate([r["categories"].get(c) for r in built], 2) for c in CATEGORIES
                     },
                 },
             }
@@ -455,7 +514,7 @@ def build_report(settings: Settings, folder: Path) -> dict:
         }
         standings = {}
         for v in variants:
-            mine = [r for r in rows if r["variant"] == v["name"] and r["status"] == "finished"]
+            mine = [r for r in rows if r["variant"] == v["name"] and r["built"]]
             found = [r["defects"].get(defect["id"], "unchecked") for r in mine]
             has = [r for r in mine if r["defects"].get(defect["id"]) == "present"]
             standings[v["name"]] = {
@@ -489,11 +548,14 @@ def build_report(settings: Settings, folder: Path) -> dict:
         )
 
     compared, comparison_rows = _comparisons(folder, variants, rows, judges)
+    # Merges that failed before another Judge tried.
+    tries = (merged or {}).get("failed_tries") or []
     judge_rows = []
     for j in judges:
         verdicts = [r["verdicts"][j] for r in rows if j in r["verdicts"]]
         checks = [r["defect_checks"][j] for r in rows if j in r["defect_checks"]]
         merges = [_judging(merged)] if merged and merged.get("judge") == j else []
+        merges += [_judging({**t, "status": "failed"}) for t in tries if t.get("judge") == j]
         pairs = [_judging(c) for c in compared if c["judge"] == j]
         every = verdicts + checks + merges + pairs
         costs = [v["cost_usd"] for v in every if v["cost_usd"] is not None]
@@ -530,15 +592,10 @@ def build_report(settings: Settings, folder: Path) -> dict:
         for c in compared
         if c.get("status") != "ok"
     ]
-    if merged and merged.get("status") != "ok":
-        failed_judging.append(
-            {
-                "trial": None,
-                "judge": merged.get("judge"),
-                "step": "merge",
-                "reason": merged["reason"],
-            }
-        )
+    failed_judging += [
+        {"trial": None, "judge": t.get("judge"), "step": "merge", "reason": t.get("reason")}
+        for t in tries + ([merged] if merge_failed else [])
+    ]
 
     models = [v.model for v in settings.variants] + [j.model for j in settings.judges]
     versions = {
@@ -569,9 +626,19 @@ def build_report(settings: Settings, folder: Path) -> dict:
         "copilot_versions": versions["copilot"],
         "flags": {
             "ran_alongside_others": [
-                {"trial": r["trial"], "max_active": r["max_active"]}
+                {"trial": r["trial"], "trials_at_once": r["trials_at_once"]}
                 for r in rows
-                if (r["max_active"] or 1) > 1
+                if (r["trials_at_once"] or 1) > 1
+            ],
+            # Trials whose main agent waited idle, with no subagent running.
+            "waited_idle": [
+                {
+                    "trial": r["trial"],
+                    "idle_minutes": _round(r["idle_minutes"], 1),
+                    "at_the_end": r["ends_idle"],
+                }
+                for r in rows
+                if r["status"] == "finished" and r["idle_minutes"]
             ],
             "mixed_claude_versions": len(versions["claude"]) > 1,
             "mixed_copilot_versions": len(versions["copilot"]) > 1,
@@ -590,8 +657,12 @@ def build_report(settings: Settings, folder: Path) -> dict:
             "regressions": regressions,
         },
         "check_names": [n for n in check_names if any(n in r["checks"] for r in rows)],
+        "merge_failed": (
+            {"judge": merged.get("judge"), "reason": merged.get("reason")} if merge_failed else None
+        ),
         "variants": variants,
         "differences": _differences(variants, rows),
+        "agreement": _agreement(rows, judges),
         "defects": defect_rows if defects is not None else None,
         "comparisons": comparison_rows,
         "judges": judge_rows,
@@ -641,7 +712,7 @@ class Table:
 
 def _summary(variants: list[dict], group: str, columns) -> list[list[str]]:
     return [
-        [v["name"], f"{v['finished']}/{v['trials']}"] + [cell(v[group][k]) for k, _, _ in columns]
+        [v["name"], f"{v['built']}/{v['trials']}"] + [cell(v[group][k]) for k, _, _ in columns]
         for v in variants
     ]
 
@@ -704,6 +775,10 @@ def _defect_table(
     )
 
 
+def _severities(counts: dict) -> str:
+    return " · ".join(str(counts[s]) for s in MERGED)
+
+
 def _comparison_result(c: dict) -> str:
     return "even" if c["ahead"] is None else f"{c['ahead']} ahead: {c['weight']}"
 
@@ -711,14 +786,19 @@ def _comparison_result(c: dict) -> str:
 def tables(data: dict) -> list[Table]:
     """Every table of the report, in order, for the Markdown and the HTML alike."""
     variants = data["variants"]
-    labels = ["Variant", "Finished"]
+    labels = ["Variant", "Built"]
     found = [
         Table(
             "Build",
             labels + [label for _, label, _ in BUILD],
             _summary(variants, "build", BUILD),
-            "Each cell is the average over finished Trials, with the lowest and highest in "
-            "brackets. Failed Trials are left out of the averages.",
+            "Built counts the Trials that finished with code changes. Each cell is the "
+            "average over finished Trials, with the lowest and highest in brackets: failed "
+            "Trials are left out, and Trials that changed nothing are counted, as they spent "
+            "the time and money. Active time is wall time "
+            f"less the waits of {IDLE_SECONDS / 60:g} minutes or more when the main agent sat "
+            "idle with no subagent running. Most subagents at once counts the subagents "
+            "running at one moment.",
         ),
         Table(
             "Output",
@@ -729,13 +809,17 @@ def tables(data: dict) -> list[Table]:
             "Quality",
             labels + ["Checks passed"] + [label for _, label, _ in QUALITY],
             [
-                [v["name"], f"{v['finished']}/{v['trials']}", _checks_cell(v["quality"])]
-                + [cell(v["quality"][k]) for k, _, _ in QUALITY]
+                [v["name"], f"{v['built']}/{v['trials']}", _checks_cell(v["quality"])]
+                + [
+                    MERGE_FAILED if data["merge_failed"] and k in MERGED else cell(v["quality"][k])
+                    for k, _, _ in QUALITY
+                ]
                 for v in variants
             ],
-            "Checks passed counts every Trial, so one that failed to finish counts against "
-            "its Variant. The Defect columns are the Defects one Trial has, on average. Nits "
-            "are what one Judge listed for one Trial, on average.",
+            "Checks passed counts every Trial, so one that failed to finish or changed "
+            "nothing counts against its Variant. The Output table and the Defect columns "
+            "count only built Trials. The Defect columns are the Defects one Trial has, on "
+            "average. Nits are what one Judge listed for one Trial, on average.",
         ),
     ]
     if len(data["check_names"]) > 1:
@@ -747,7 +831,8 @@ def tables(data: dict) -> list[Table]:
                     [r["trial"]] + [r["checks"].get(name, "–") for name in data["check_names"]]
                     for r in data["trials"]
                 ],
-                "Each Check's result in each Trial. – means it was not run.",
+                f"Each Check's result in each Trial. – means it was not run; {NO_CHANGES} that "
+                "the build changed nothing, so the result says nothing about it.",
             )
         )
     if any(any(d["measures"].values()) for d in data["differences"]):
@@ -757,7 +842,12 @@ def tables(data: dict) -> list[Table]:
                 ["Variants"] + [label for _, label, _ in COMPARED],
                 [
                     [" and ".join(d["variants"])]
-                    + [_difference_cell(d["measures"][k]) for k, _, _ in COMPARED]
+                    + [
+                        MERGE_FAILED
+                        if data["merge_failed"] and k == "defects"
+                        else _difference_cell(d["measures"][k])
+                        for k, _, _ in COMPARED
+                    ]
                     for d in data["differences"]
                 ],
                 "Each cell names the Variant with the lower average and by how much, then "
@@ -777,7 +867,7 @@ def tables(data: dict) -> list[Table]:
                 "Defects by category",
                 labels + list(CATEGORY_LABELS.values()),
                 [
-                    [v["name"], f"{v['finished']}/{v['trials']}"]
+                    [v["name"], f"{v['built']}/{v['trials']}"]
                     + [cell(v["quality"]["categories"][c]) for c in CATEGORY_LABELS]
                     for v in variants
                 ],
@@ -851,6 +941,24 @@ def tables(data: dict) -> list[Table]:
                 "toss, in the same words as the Differences table.",
             )
         )
+    if data["agreement"]:
+        names = list(dict.fromkeys(j for a in data["agreement"] for j in a["by_judge"]))
+        found.append(
+            Table(
+                "Judge agreement",
+                ["Trial", *names, "Spread"],
+                [
+                    [a["trial"]]
+                    + [_severities(a["by_judge"][j]) if j in a["by_judge"] else "–" for j in names]
+                    + [_severities(a["spread"])]
+                    for a in data["agreement"]
+                ],
+                "The Findings each Judge reported in its own Verdict on the Trial, as "
+                "critical · major · minor. Spread is the most minus the fewest of each. A wide "
+                "spread means the Judges disagree about how bad the build is, so trust its "
+                "Defect counts less.",
+            )
+        )
     if data["judges"]:
         found.append(
             Table(
@@ -869,6 +977,10 @@ def tables(data: dict) -> list[Table]:
     return found
 
 
+#: How to try failed judging again, under the list of what failed.
+RETRY = "`build-bench judge` tries these again; it keeps every step that succeeded."
+
+
 def failed_judging_lines(data: dict) -> list[str]:
     out = []
     for f in data["failed_judging"]:
@@ -883,6 +995,13 @@ def failed_judging_lines(data: dict) -> list[str]:
 
 def flag_lines(data: dict) -> list[str]:
     out = []
+    if data["merge_failed"]:
+        failed = data["merge_failed"]
+        out.append(
+            f"- **Merging the Findings into Defects failed** (by {failed['judge']}: "
+            f"{failed['reason']}), so no Defect count is known. `build-bench judge` tries "
+            "it again."
+        )
     for r in data["flags"]["regressions"]:
         what = "the checks" if r["check"] == "checks" else f"the check `{r['check']}`"
         out.append(
@@ -898,10 +1017,23 @@ def flag_lines(data: dict) -> list[str]:
         out.append("- Login: **API key**.")
     alongside = data["flags"]["ran_alongside_others"]
     if alongside:
-        names = ", ".join(f"{a['trial']} ({a['max_active']} at once)" for a in alongside)
+        names = ", ".join(f"{a['trial']} ({a['trials_at_once']} at once)" for a in alongside)
         out.append(
             f"- **Ran alongside other Trials:** {names}. Time comparisons between Trials "
             "that ran at once are weaker than cost and quality comparisons."
+        )
+    idle = data["flags"]["waited_idle"]
+    if idle:
+        names = ", ".join(
+            f"{w['trial']} ({num(w['idle_minutes'])} min"
+            + (", at the end)" if w["at_the_end"] else ")")
+            for w in idle
+        )
+        out.append(
+            f"- **Waited idle:** {names}. The main agent had ended its turn with no subagent "
+            "running, waiting for a wakeup, a timer or a background command. Active time "
+            f"leaves out each such wait of {IDLE_SECONDS / 60:g} minutes or more; wall time "
+            "keeps it."
         )
     for kind, name in AGENT_NAMES.items():
         versions = data[f"{kind}_versions"]
@@ -959,7 +1091,7 @@ def markdown(data: dict) -> str:
         out += [
             "## Trials that changed nothing",
             "",
-            "These Trials finished but left no code changes. Their numbers are in the averages.",
+            EMPTY,
             "",
         ]
         for f in data["empty_trials"]:
@@ -971,7 +1103,7 @@ def markdown(data: dict) -> str:
             )
         out.append("")
     if data["failed_judging"]:
-        out += ["## Failed judging", ""]
+        out += ["## Failed judging", "", RETRY, ""]
         out += [f"- {line}" for line in failed_judging_lines(data)]
         out += [""]
     return "\n".join(out)

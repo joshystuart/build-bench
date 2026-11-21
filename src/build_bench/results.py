@@ -183,6 +183,12 @@ class Trial:
     def finished(self) -> bool:
         return (self.status or {}).get("status") == "finished"
 
+    @property
+    def changed_nothing(self) -> bool:
+        """The build left no code changes: its diff was saved, and is empty."""
+        diff = self.folder / "diff.patch"
+        return diff.is_file() and not diff.read_text(errors="replace").strip()
+
 
 def _trial(trial_folder: Path, variant: str, repeat: int) -> Trial:
     root = workspaces(trial_folder.parent.parent)

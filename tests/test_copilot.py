@@ -47,6 +47,8 @@ def test_a_copilot_variant_builds_with_no_claude_login(experiment, fake, cli, mo
     assert argv[argv.index("--output-format") + 1] == "json"
     assert argv[argv.index("--model") + 1] == "claude-sonnet-5.5"
     assert argv[argv.index("--effort") + 1] == "high"
+    # Claude Code's wakeup tools are not Copilot's, so nothing is denied by default.
+    assert not any(a.startswith("--deny-tool") for a in argv)
     trial = results_folder(settings) / "trials" / "pilot-1"
     home = workspace_home(trial)
     # Its own home folder, holding only the Variant's skills; nothing follows it in.
@@ -130,7 +132,7 @@ def test_a_copilot_trial_is_measured_and_reported_beside_a_claude_one(experiment
     assert measured["cost_usd"] == pytest.approx(0.1300258)
     assert len(measured["subagents"]) == 1
     md = (folder / "report.md").read_text()
-    assert "| pilot | 1/1 | 0.13 | 164378 | 0.29 | 0.16 | 1 |" in md
+    assert "| pilot | 1/1 | 0.13 | 164378 | 0.29 | 0.29 | 0.16 | 1 | 1 |" in md
     assert "- Claude Code version: 2.1.319." in md
     assert "- Copilot CLI version: 1.0.112." in md
     assert "**Costs are on two bases.**" in md
@@ -186,6 +188,16 @@ def test_claude_code_needs_a_login_named_and_copilot_does_not(experiment, fake, 
     code, _, err = cli("run", experiment(auth=None, variants=[copilot()], judges=[judge]))
     assert code == 2
     assert "auth: required, because judges.0 is Claude Code" in err
+
+
+def test_a_copilot_variant_can_be_denied_tools(experiment, fake, cli):
+    variant = copilot(disallowed_tools=["shell(git push)", "web_fetch"])
+    assert cli("run", experiment(auth=None, variants=[variant]))[0] == 0
+    [call] = fake.calls(agent="copilot")
+    assert [a for a in call["argv"] if a.startswith("--deny-tool")] == [
+        "--deny-tool=shell(git push)",
+        "--deny-tool=web_fetch",
+    ]
 
 
 def test_a_copilot_agent_judge(experiment, fake, cli):

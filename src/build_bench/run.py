@@ -523,6 +523,7 @@ def _build(settings: Settings, folder: Path, trial: Trial, agent: Headless) -> d
         auth=settings.agent_login(variant.agent),
         timeout_minutes=settings.limits.timeout_minutes,
         max_budget_usd=settings.limits.max_budget_usd,
+        disallowed_tools=settings.denied_tools(variant.agent, variant),
     )
     result = agent.start(request)
     write_json(
@@ -541,7 +542,28 @@ def _build(settings: Settings, folder: Path, trial: Trial, agent: Headless) -> d
     save_diffs(settings, folder, trial)
     if result.failure:
         return {"status": "failed", "reason": result.failure, "agent_seconds": result.seconds}
+    if not (trial.folder / "diff.patch").read_text().strip():
+        elsewhere = branches_ahead(repo)
+        if elsewhere:
+            name, ahead = elsewhere[0]
+            return {
+                "status": "failed",
+                "reason": f"the build left its work on the branch `{name}` ({ahead} commit(s) "
+                "past the checked-out one), so its diff is empty",
+                "agent_seconds": result.seconds,
+            }
     return {"status": "finished", "agent_seconds": result.seconds}
+
+
+def branches_ahead(repo: Path) -> list[tuple[str, int]]:
+    """Local branches with commits the checked-out work does not have, and how
+    many, the furthest ahead first."""
+    found = []
+    for name in git(repo, "for-each-ref", "--format=%(refname:short)", "refs/heads").splitlines():
+        ahead = int(git(repo, "rev-list", "--count", f"HEAD..refs/heads/{name}"))
+        if ahead:
+            found.append((name, ahead))
+    return sorted(found, key=lambda b: -b[1])
 
 
 def git(repo: Path, *args: str, env: dict | None = None) -> str:

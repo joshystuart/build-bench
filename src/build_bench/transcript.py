@@ -28,6 +28,12 @@ from .settings import Price
 #: Tools that start subagents; their time is waiting, not tool work.
 AGENT_TOOLS = {"Agent", "Task"}
 TOKEN_KINDS = ("input", "output", "cache_read", "cache_write")
+#: The shortest wait the main agent spends idle, its turn ended and no subagent
+#: running, that is left out of its active time.
+IDLE_SECONDS = 300.0
+#: Saved with each measurement; a saved one of an older version is measured
+#: from its transcript again.
+VERSION = 2
 
 
 def default_prices() -> dict[str, Price]:
@@ -180,6 +186,52 @@ def overlap(
     return found
 
 
+def without(
+    a: list[tuple[float, float]], b: list[tuple[float, float]]
+) -> list[tuple[float, float]]:
+    """The parts of intervals ``a`` outside every interval ``b``."""
+    found = []
+    for start, end in a:
+        at = start
+        for b_start, b_end in merge(b):
+            if b_end <= at or b_start >= end:
+                continue
+            if b_start > at:
+                found.append((at, b_start))
+            at = max(at, b_end)
+        if at < end:
+            found.append((at, end))
+    return found
+
+
+def most_at_once(spans: list[tuple[float, float]]) -> int:
+    """The most of these intervals that were open at one moment."""
+    edges = sorted([(s, 1) for s, _ in spans] + [(e, -1) for _, e in spans])
+    most = now = 0
+    for _, step in edges:  # an end sorts before a start at the same moment
+        now += step
+        most = max(most, now)
+    return most
+
+
+def timing(total: float, idle: list[tuple[float, float]], subagents: list[dict]) -> dict[str, Any]:
+    """Active time, idle waits and how many subagents ran at once, from times
+    counted from the Trial's start. Each idle wait left out of the active time
+    is at least `IDLE_SECONDS` long and falls in no subagent's run."""
+    long = [(s, e) for s, e in idle if e - s >= IDLE_SECONDS]
+    idle_seconds = sum(e - s for s, e in long)
+    spans = [(s["start"], s["end"]) for s in subagents if s.get("start") is not None]
+    return {
+        "active_seconds": round(total - idle_seconds, 3),
+        "idle_seconds": round(idle_seconds, 3),
+        "idle_intervals": [[round(s, 3), round(e, 3)] for s, e in long],
+        # Less than an idle wait's worth of work came after the last one.
+        "ends_idle": bool(long) and total - long[-1][1] < IDLE_SECONDS,
+        "most_subagents_at_once": most_at_once(spans),
+        "transcript_version": VERSION,
+    }
+
+
 def idle_gaps(entries: list[dict]) -> list[tuple[float, float]]:
     """Gaps where the main agent had ended its turn and was waiting for a new
     message, such as the notice that a background subagent finished."""
@@ -258,7 +310,10 @@ def measure(transcript: Path, prices: dict[str, Price]) -> dict[str, Any]:
         if c["name"] in AGENT_TOOLS and c["start"] is not None and c["end"] is not None
     ]
     running = merge([(s["_start"], s["_end"]) for s in subagents if s.get("_start") is not None])
-    waits = merge(blocking + overlap(idle_gaps(main), running))
+    gaps = idle_gaps(main)
+    waits = merge(blocking + overlap(gaps, running))
+    # Idle with no subagent running: waiting for a wakeup, a timer or a background command.
+    idle = without(gaps, running)
     tool_seconds: dict[str, float] = {}
     for call in calls:
         if call["name"] in AGENT_TOOLS or call["start"] is None or call["end"] is None:
@@ -268,17 +323,19 @@ def measure(transcript: Path, prices: dict[str, Price]) -> dict[str, Any]:
 
     for sub in subagents:
         del sub["_start"], sub["_end"]
+    total = max(times) - origin
     return {
         "cost_usd": cost,
         "cost_basis": "list prices",
         "tokens": tokens,
         "unpriced_models": unpriced,
         "by_agent": agents,
-        "total_seconds": round(max(times) - origin, 3),
+        "total_seconds": round(total, 3),
         "wait_seconds": round(sum(e - s for s, e in waits), 3),
         "wait_intervals": [[rel(s), rel(e)] for s, e in waits],
         "subagents": subagents,
         "tool_seconds": {k: round(v, 3) for k, v in sorted(tool_seconds.items())},
+        **timing(total, [(s - origin, e - origin) for s, e in idle], subagents),
     }
 
 
@@ -414,4 +471,6 @@ def measure_copilot(events: list[dict], prices: dict[str, Price]) -> dict[str, A
         "wait_intervals": [[rel(s), rel(e)] for s, e in merged],
         "subagents": subagents,
         "tool_seconds": {k: round(v, 3) for k, v in sorted(tool_seconds.items())},
+        # One headless Copilot turn never waits idle for a wakeup.
+        **timing(max(times) - origin, [], subagents),
     }

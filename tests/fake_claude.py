@@ -3,6 +3,8 @@
 Control keys (all optional):
     version       what `--version` reports
     mode          ok | crash | hang | stubborn (hang, ignoring SIGTERM) | budget | fail_once
+                  | elsewhere (commit on a new branch, then check the base back out)
+                  | nothing (change no file)
     per_cwd       {substring of the working folder: mode}
     sleep         seconds to wait before answering
     events        stream events a build writes before it waits (to watch it mid-run)
@@ -129,7 +131,9 @@ def main() -> int:
     if judge:
         Path(cwd, "judge-was-here.txt").write_text("the judge edits its copy\n")
         Path(cwd, "fake_committed.txt").write_text("changed by the judge\n")
-    else:
+    elif mode == "elsewhere":
+        _build_elsewhere(cwd, model)
+    elif mode != "nothing":
         _build(cwd, model)
 
     session = option("--session-id") or str(uuid.uuid4())
@@ -177,18 +181,30 @@ def main() -> int:
     return 0
 
 
-def _build(cwd: str, model: str) -> None:
-    def git(*args):
-        subprocess.run(
-            ["git", "-c", "user.name=Fake", "-c", "user.email=fake@example.com", *args],
-            check=True,
-            capture_output=True,
-        )
+def _git(*args):
+    subprocess.run(
+        ["git", "-c", "user.name=Fake", "-c", "user.email=fake@example.com", *args],
+        check=True,
+        capture_output=True,
+    )
 
+
+def _build(cwd: str, model: str) -> None:
+    git = _git
     Path(cwd, "fake_committed.txt").write_text("committed by the fake agent\n")
     git("add", "fake_committed.txt")
     git("commit", "-q", "-m", f"fake commit by {model}")
     Path(cwd, "fake_uncommitted.txt").write_text("left uncommitted\n")
+
+
+def _build_elsewhere(cwd: str, model: str) -> None:
+    """Commit the work on a branch of its own, then go back to the base branch."""
+    _git("checkout", "-q", "-b", "feat/fake")
+    for n in (1, 2):
+        Path(cwd, f"fake_{n}.txt").write_text(f"commit {n} on the branch\n")
+        _git("add", f"fake_{n}.txt")
+        _git("commit", "-q", "-m", f"fake commit {n} by {model}")
+    _git("checkout", "-q", "-")
 
 
 def _tick_plan(cwd: str) -> None:

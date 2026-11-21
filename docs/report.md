@@ -5,11 +5,18 @@ folder alone. It starts no agent and calls no model.
 
 ## The tables
 
-One line per Variant unless noted.
+One line per Variant unless noted. A Trial is **built** when it finished and
+left code changes. One that finished but changed nothing counts as not built:
+no Judge is asked about it (they would only bill for saying it does nothing),
+its checks read "– (no changes)" and do not count as passed, and it is left out
+of the Output and Defect averages. Its cost and time stay in the Build
+averages, because they were spent.
 
-- **Build** and **Output:** the average over finished Trials, with the lowest
-  and highest.
-- **Quality:** how many Trials finished and how many passed the checks, both
+- **Build** and **Output:** the average over finished Trials (Build) or built
+  Trials (Output), with the lowest and highest. Build has active time and wall
+  time side by side (see [trials.md](trials.md#measurements)), and the most
+  subagents that ran at once.
+- **Quality:** how many Trials were built and how many passed the checks, both
   out of every Trial, so a Trial that failed counts against its Variant. With
   several named Checks, the Trials that passed each one (`lint 3/3 · ui 1/3`).
   Then the Defects one Trial has, by severity, and the nits one Judge listed.
@@ -43,6 +50,11 @@ One line per Variant unless noted.
   set: how many pairs of Trials were compared and how often each Variant's
   build was preferred. A pair counts once, for the build more of its Judges
   preferred than the other.
+- **Judge agreement:** one line per Trial that two or more Judges gave a
+  Verdict on: the Findings worse than a nit each Judge reported, as critical ·
+  major · minor, and the spread (the most minus the fewest of each). When one
+  Judge finds 2 critical problems where another finds none, trust that Trial's
+  Defect counts less.
 - **Judges:** each Judge's Verdicts, Defect checks, Comparisons, failures,
   cost and time, kept apart from the build numbers. Only the Judges in the
   settings file are listed and counted: what a Judge since removed left in the
@@ -51,8 +63,14 @@ One line per Variant unless noted.
   when the model is not on it.
 
 Failed Trials, failed Verdicts, failed Defect checks and failed Comparisons
-are listed with their reasons. The report flags Trials that ran alongside
-others (time comparisons between them are weaker), an Experiment whose Trials
+are listed with their reasons, and `build-bench judge` tries the failed
+judging again. When merging the Findings into Defects failed, no Defect count
+is known: the Defect columns and the Differences table's Defect column read
+"n/a, merge failed", the Defect tables are left out, and the report says so
+first. The report flags Trials that ran alongside
+others (time comparisons between them are weaker; `trials_at_once` in
+`report.json` counts the Trials building at one moment, not subagents),
+Trials whose main agent waited idle (and whether that was at the end), an Experiment whose Trials
 used different agent versions, Judges that all share the builders' model
 family, checks that no Trial passed (with whether `run` saw them pass on the
 base commit), regressions (a Check that passed on the base commit and failed
@@ -67,7 +85,7 @@ offline, and has a "Show as table" alternative for every chart.
 
 Two Trials of the same Variant never come out the same, so a gap between two
 Variants' averages may be nothing but that spread. The Differences table
-weighs each gap against it, for behaviour Defects per Trial, cost and time.
+weighs each gap against it, for behaviour Defects per Trial, cost and active time.
 Test-gap and scope Defects are counted in their own table and not weighed.
 Defects merged before categories existed show as uncategorised and are
 weighed, as they were then.

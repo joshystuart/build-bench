@@ -24,6 +24,7 @@ import tempfile
 import threading
 import time
 import uuid
+from functools import partial
 from importlib import resources
 from pathlib import Path
 from typing import Any
@@ -95,6 +96,11 @@ def judge(
             for t, m in zip(trials, measured, strict=True)
             if t.finished and m is not None and not m.get("error")
         ]
+        # Judges would only bill for saying a build that changed nothing does nothing.
+        for t in ready:
+            if t.changed_nothing:
+                board.say(f"[skip]  {t.id}: the build changed nothing, so no Judge is asked")
+        ready = [t for t in ready if not t.changed_nothing]
         found = find(settings, folder, ready, board, agent)
         merged = merge(settings, folder, ready, board, agent)
         checked = check(settings, folder, ready, board, agent)
@@ -185,6 +191,13 @@ def measure_trial(settings: Settings, folder: Path, trial: Trial, say=print) -> 
         return None
     if target.exists():
         saved = read_json(target)
+        prices = {**transcript.default_prices(), **settings.prices}
+        if saved.get("transcript_version") != transcript.VERSION and "total_seconds" in saved:
+            # Measured before the transcript gave all it gives now: reading it
+            # again is quick and asks no one.
+            saved.update(transcript.measure(trial.folder / "transcript", prices))
+            write_json(target, saved)
+            say(f"[measured again] {trial.id}: its transcript, for measurements added since")
         if saved.get("error"):
             say(f"[measure failed] {trial.id}: {saved['error']}")
         elif trial.workspace.is_dir() and (
@@ -568,6 +581,7 @@ def _ask_agent(
         auth=settings.agent_login(j.type),
         timeout_minutes=limits.timeout_minutes,
         max_budget_usd=limits.max_budget_usd,
+        disallowed_tools=settings.denied_tools(j.type),
     )
     result = agent.of(j.type).start(request)
     if result.failure:
@@ -712,9 +726,21 @@ def _attempt(record: dict, target: Path, ask, parse) -> dict:
         record["reason"] = str(error) or type(error).__name__
     except Exception as error:  # noqa: BLE001 - a broken call fails this step only
         record["reason"] = f"{type(error).__name__}: {error}"
+        if _stops_judge(error):
+            record["stops_judge"] = True
     record["seconds"] = round(seconds + time.time() - started, 3)
     write_json(target, record)
     return record
+
+
+def _stops_judge(error: Exception) -> bool:
+    """An API Judge's error that every later ask would get too: no login, no
+    permission, or no money left."""
+    import litellm
+
+    return isinstance(error, litellm.BudgetExceededError) or getattr(
+        error, "status_code", None
+    ) in (401, 402, 403)
 
 
 def _record(j: Judge, **more: Any) -> dict[str, Any]:
@@ -806,7 +832,7 @@ def find(
         with lock:
             if verdict["status"] == "ok":
                 board.say(f"[verdict] {trial.id} by {j.name}")
-            else:
+            elif verdict["status"] == "failed":
                 board.say(f"[verdict failed] {trial.id} by {j.name}: {verdict['reason']}")
 
     in_parallel(one, todo, settings.concurrency, agent, board.say)
@@ -876,23 +902,32 @@ def merge(
             defects.append({**defect, "findings": kept})
     placed = {key for defect in defects for key in defect["findings"]}
     pending = {f"F{n}": key for n, key in enumerate((k for k in found if k not in placed), 1)}
+    # Cost and time spent before carry over only to the Judge that spent them.
+    mine = saved.get("judge") == j.name
     record = _record(
         j,
-        cost_usd=saved.get("cost_usd"),
-        seconds=saved.get("seconds"),
+        cost_usd=saved.get("cost_usd") if mine else None,
+        seconds=saved.get("seconds") if mine else None,
         next_id=saved.get("next_id", 1),
         defects=_with_severity(defects, found),
     )
     if not pending:
         board.step("merge", [], f"no new Findings to merge ({len(defects)} Defect(s) so far)")
+        if saved:
+            # Still the merge of the Judge that made it, with the tries before it.
+            record = {**saved, "defects": record["defects"], "reason": None}
         record["status"] = "ok"
         write_json(target, record)
         return True
+    # Another Judge tries when the merge Judge fails, so one Judge's outage does
+    # not leave every Defect count unknown.
+    others = [other for other in settings.judges if other is not j]
     ask = ask_of(f"merge by {j.name}", j, target.with_suffix(""))
     board.step(
         "merge",
         [ask],
-        f"{len(pending)} new Finding(s) to place among {len(defects)} Defect(s), by {j.name}",
+        f"{len(pending)} new Finding(s) to place among {len(defects)} Defect(s), by {j.name}"
+        + (", or the next Judge if it fails" if others else ""),
     )
 
     def parse(reply: str) -> dict:
@@ -919,7 +954,7 @@ def merge(
     instructions = shipped_prompt(settings, "merge")
     body = merge_request(defects, pending, found)
 
-    def call() -> tuple[str, float | None]:
+    def call(j: Judge) -> tuple[str, float | None]:
         if j.type == "api":
             return _ask_api(settings, j, instructions, body, agent)
         with tempfile.TemporaryDirectory(prefix="build-bench-merge-") as tmp:
@@ -928,12 +963,36 @@ def merge(
             prompt = f"{instructions}\n\n---\n\n{body}"
             return _ask_agent(settings, j, prompt, work, target.with_suffix(""), agent)
 
-    board.asking(ask, lambda: _attempt(record, target, call, parse))
-    if record["status"] == "ok":
-        board.say(f"[merged] {len(found)} finding(s) into {len(defects)} defect(s) by {j.name}")
-    else:
-        board.say(f"[merge failed] by {j.name}: {record['reason']}")
-    return record["status"] == "ok"
+    def attempt(judge: Judge, record: dict) -> dict:
+        return _attempt(record, target, lambda: call(judge), parse)
+
+    failed: list[dict] = []
+    for n, judge in enumerate([j, *others]):
+        if n:
+            if judge.name in board.stopped:
+                continue
+            ask = ask_of(f"merge by {judge.name}", judge, target.with_suffix(""))
+            board.add(ask)
+            board.say(f"[merge] trying again with {judge.name}")
+            record = {**_record(judge), **{k: record[k] for k in ("next_id", "defects")}}
+        # Each failed try is kept, so its cost and reason count for its own Judge.
+        record["failed_tries"] = failed
+        done = board.asking(ask, partial(attempt, judge, record))
+        if done["status"] == "ok":
+            board.say(
+                f"[merged] {len(found)} finding(s) into {len(defects)} defect(s) by {judge.name}"
+            )
+            return True
+        if done["status"] == "failed":
+            board.say(f"[merge failed] by {judge.name}: {done['reason']}")
+            failed.append({k: done.get(k) for k in ("judge", "reason", "cost_usd", "seconds")})
+    if not failed:
+        # Every Judge was stopped before its turn: the Defects saved before are
+        # missing these Findings, so they must not read as merged.
+        record.update(status="failed", reason="every Judge was stopped before it could merge")
+        write_json(target, record)
+    # Otherwise the last failed try is saved, holding the tries before it.
+    return False
 
 
 def _with_severity(defects: list[dict], found: dict[str, dict]) -> list[dict]:
@@ -1109,12 +1168,12 @@ def check(
             got = check_answers(reply_json(reply, "answers"), [d["id"] for d in missing])
             return {"answers": {**record["answers"], **got}}
 
-        board.asking(ask, lambda: _attempt(record, target, call, parse))
+        done = board.asking(ask, lambda: _attempt(record, target, call, parse))
         with lock:
-            if record["status"] == "ok":
+            if done["status"] == "ok":
                 board.say(f"[checked] {trial.id} by {j.name}")
-            else:
-                board.say(f"[check failed] {trial.id} by {j.name}: {record['reason']}")
+            elif done["status"] == "failed":
+                board.say(f"[check failed] {trial.id} by {j.name}: {done['reason']}")
 
     in_parallel(one, todo, settings.concurrency, agent, board.say)
     return all(

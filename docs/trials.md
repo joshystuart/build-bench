@@ -31,7 +31,10 @@ and what is measured afterwards.
   [settings.md](settings.md#checks-on-the-base-commit).
 - **Output:** everything that differs from the base commit, committed or not,
   as one diff that leaves out files git ignores (so what `pre_build` installs
-  does not count). The plan folder is diffed separately.
+  does not count). The plan folder is diffed separately. When that diff is
+  empty but a local branch has commits the checked-out one lacks, the build
+  left its work there: the Trial fails, naming the branch, rather than being
+  recorded as a build that changed nothing.
 
 ## Watching a run
 
@@ -93,8 +96,15 @@ Three things differ from Claude Code, and
   even though the transcript repeats its usage. Costs use the price table in
   [src/build_bench/prices.yaml](../src/build_bench/prices.yaml); `prices` in the
   settings file overrides or adds models.
-- **Time:** total, per subagent, and the time the main agent spent waiting on
-  subagents (overlapping waits count once).
+- **Time:** wall time, per subagent, and the time the main agent spent waiting
+  on subagents (overlapping waits count once). **Active time** is wall time
+  less every idle wait of 5 minutes or more: the main agent had ended its turn
+  and no subagent was running, so it was waiting for a wakeup, a timer or a
+  background command (`idle_intervals`). `ends_idle` marks a Trial with less
+  than 5 minutes of work after its last idle wait. A stale wakeup once kept
+  Trials running 13 to 25 minutes after their work was done; time comparisons
+  use active time. A Copilot Trial is one headless turn and never waits idle.
+- **Most subagents at once:** the most subagents running at one moment.
 - **Tool time by kind:** shell commands grouped by their first word (after
   `cd dir &&` and `VAR=value`), other tools by name.
 - **Production and test lines** added and removed. A file is test or
@@ -107,6 +117,9 @@ Three things differ from Claude Code, and
   workspace (or in the workspace itself with `checks_in_place`; see
   [settings.md](settings.md#where-the-checks-run)), with its output in
   `checks.log`.
+
+A measurement saved before build-bench measured all of this is read again
+from its transcript by the next `judge`, which asks no Judge for that.
 
 Boxes a build ticks in the plan are not measured: they are the build's own
 claim, and a plan need not have any.
