@@ -517,6 +517,28 @@ def denied(model: str) -> litellm.PermissionDeniedError:
     )
 
 
+def over_budget(model: str) -> litellm.APIError:
+    """What LiteLLM raised when an OpenRouter workspace ran out of budget."""
+    return litellm.APIError(
+        status_code=403,
+        message='APIError: OpenrouterException - {"error":{"message":"Workspace daily '
+        'budget of $10.00 exceeded.","code":403}}',
+        llm_provider="openrouter",
+        model=model,
+    )
+
+
+def test_a_judge_over_its_providers_budget_is_asked_nothing_more(experiment, fake, cli, stub):
+    judges = [api_judge("one", model="openai/gpt-a"), api_judge("two", model="openai/gpt-b")]
+    stub.fail = lambda model, kind: over_budget(model) if model == "openai/gpt-a" else None
+    settings = built(experiment, cli, judges=judges)
+    code, out, _ = cli("judge", settings)
+    assert code == 1
+    assert [r["model"] for r in stub.requests].count("openai/gpt-a") == 1
+    assert out.count("[judge stopped] one: APIError: ") == 1
+    assert "Workspace daily budget of $10.00 exceeded." in out
+
+
 def test_a_judge_refused_permission_is_asked_nothing_more(experiment, fake, cli, stub):
     judges = [api_judge("one", model="openai/gpt-a"), api_judge("two", model="openai/gpt-b")]
     stub.fail = lambda model, kind: denied(model) if model == "openai/gpt-a" else None
