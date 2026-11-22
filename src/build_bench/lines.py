@@ -37,6 +37,17 @@ class FileDiff:
     binary: bool = False
     #: (mark, text) for every line shown, where mark is " ", "+" or "-".
     lines: list[tuple[str, str]] = field(default_factory=list)
+    #: (old, new) line numbers of each line in `lines`; None on the side it is not on.
+    numbers: list[tuple[int | None, int | None]] = field(default_factory=list)
+    #: Where in `lines` each `@@` hunk starts.
+    starts: list[int] = field(default_factory=list)
+    #: The path before the change, when the file was renamed.
+    old_path: str | None = None
+    #: added, deleted, renamed or modified.
+    status: str = "modified"
+
+
+_HUNK = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
 
 def parse(diff: str) -> list[FileDiff]:
@@ -44,6 +55,7 @@ def parse(diff: str) -> list[FileDiff]:
     current: FileDiff | None = None
     old_path = new_path = None
     in_hunk = False
+    old_at = new_at = 0
     for line in diff.splitlines():
         if line.startswith("diff --git "):
             current = FileDiff(path=line.split(" b/", 1)[-1])
@@ -52,6 +64,8 @@ def parse(diff: str) -> list[FileDiff]:
             in_hunk = False
         elif current is None:
             continue
+        elif not in_hunk and line.startswith(("new file mode", "deleted file mode", "rename ")):
+            _header(current, line)
         elif not in_hunk and line.startswith("--- "):
             old_path = line[4:].removeprefix("a/")
         elif not in_hunk and line.startswith("+++ "):
@@ -61,9 +75,30 @@ def parse(diff: str) -> list[FileDiff]:
             current.binary = True
         elif line.startswith("@@"):
             in_hunk = True
+            current.starts.append(len(current.lines))
+            found = _HUNK.match(line)
+            old_at, new_at = (int(found[1]), int(found[2])) if found else (1, 1)
+            # A side with no lines is numbered from 0; its first line would be 1.
+            old_at, new_at = max(old_at, 1), max(new_at, 1)
         elif in_hunk and line[:1] in (" ", "+", "-"):
-            current.lines.append((line[0], line[1:]))
+            mark = line[0]
+            current.lines.append((mark, line[1:]))
+            current.numbers.append(
+                (None if mark == "+" else old_at, None if mark == "-" else new_at)
+            )
+            old_at += mark != "+"
+            new_at += mark != "-"
     return files
+
+
+def _header(current: FileDiff, line: str) -> None:
+    if line.startswith("new file mode"):
+        current.status = "added"
+    elif line.startswith("deleted file mode"):
+        current.status = "deleted"
+    elif line.startswith("rename from "):
+        current.status = "renamed"
+        current.old_path = line.removeprefix("rename from ")
 
 
 def rust_test_lines(lines: list[str]) -> set[int]:

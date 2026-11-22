@@ -870,9 +870,15 @@ def reported(trials: list[Trial]) -> dict[str, dict]:
                 continue
             for finding in verdict.get("findings") or []:
                 if finding.get("severity") in MERGED:
-                    text = json.dumps([finding["title"], finding["where"], finding["detail"]])
-                    found[f"{trial.id}/{path.stem}/{_sha(text)}"] = finding
+                    found[finding_key(trial.id, path.stem, finding)] = finding
     return found
+
+
+def finding_key(trial: str, judge: str, finding: dict) -> str:
+    """The key `defects.json` names a Finding by: its Trial, its Judge and a hash
+    of its words."""
+    text = json.dumps([finding["title"], finding["where"], finding["detail"]])
+    return f"{trial}/{judge}/{_sha(text)}"
 
 
 def merge_judge(settings: Settings) -> Judge | None:

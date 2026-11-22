@@ -1,7 +1,7 @@
 # The report
 
-`report` writes `report.md`, `report.html` and `report.json` from the results
-folder alone. It starts no agent and calls no model.
+`report` writes `report.md`, `report.html`, `report.json` and `diffs.html` from
+the results folder alone. It starts no agent and calls no model.
 
 ## The tables
 
@@ -81,6 +81,54 @@ it. `report.json` holds every number, per Trial and
 per Variant. `report.html` adds a timeline per Trial on one time scale, works
 offline, and has a "Show as table" alternative for every chart.
 
+## The code: diffs.html
+
+`diffs.html` shows the code each Trial produced, so you can read it and check
+whether the Judges' Findings are real. It is built from the diffs every Trial
+saves (`diff-full.patch`, or `diff.patch` for Trials saved before whole-file
+diffs were kept), so it works after `clean` and on old results folders. Like
+`report.html` it works offline, and `report.html` and `report.md` link to it.
+
+- **Files:** one row per changed file, one column per Trial, grouped by
+  Variant. Each cell is the lines added and removed. The files the fewest
+  Trials touched come first, since that is where builds differ. Files the
+  ignore globs match (`ignore_paths` and the presets') are folded into one row
+  that opens; the page holds only the lines around their changes, not the
+  whole file, because lockfiles would otherwise be a third of its size. A
+  Trial that failed or changed nothing has an empty, hatched
+  column. A badge counts the distinct Defects, and Findings not merged into a
+  Defect, pinned in that file.
+- **The diff:** pick a cell to read that Trial's diff of that file, with line
+  numbers and three lines of context, or the whole file. The address records
+  the Trial and the file, so a view can be linked and survives a reload.
+- **Pins:** each Finding (from `verdicts/<judge>.json`) and each Defect check
+  answer that says the Trial has the Defect (from `defect-checks/<judge>.json`)
+  is placed by its `where`: `src/a.rs:120`, `src/a.rs:120-130`, `a.rs, line 120`
+  and several of these in one string all work, and a path may be shorter or
+  longer than the diff's. A pin names its Judge, severity, category, title,
+  detail or evidence, whether it is a Finding or a Defect check, and the Defect
+  a Finding was merged into. Line numbers are those of the final file. A pin
+  with a line goes under that line, and the lines around it are shown even far
+  from any change. One that names a file but no line the diff holds goes at
+  the top of the file. One whose file the Trial did not change, or whose
+  `where` names no file, is listed under **Not in this diff** with its words.
+- **Defects:** worst first, as in the report. Open one to see every Trial
+  that has it, which Judges found it in their own Verdict, which confirmed it
+  in a Defect check and which said no, with a link to each pin.
+- **Compare with:** with a file open, pick another Trial to see the two final
+  versions diffed against each other. A Trial that did not change the file has
+  the base version. Offered only between Trials with `diff-full.patch`; a file
+  too large to diff in the page says to use `build-bench diff`.
+
+`build-bench diff <trial> <trial> [path]` prints the same comparison for
+every file that differs, or one, as a unified diff you can pipe into `delta`
+or `less`. It rebuilds each Trial's files from its `diff-full.patch`; a file
+only one Trial changed is compared against the base version, read from the
+other side of a Trial's diff of it. It takes `--results` like `report`, and the
+settings file goes first when you name one:
+`build-bench diff bench.yml fast-1 slow-2 src/main.rs`. It stops with exit
+code 2 for an unknown Trial or one saved without `diff-full.patch`.
+
 ## Is a difference real?
 
 Two Trials of the same Variant never come out the same, so a gap between two
@@ -132,7 +180,7 @@ compare anything. Whatever separates them is noise.
     verdicts/<judge>.json  defect-checks/<judge>.json
   defects.json
   comparisons/<judge>/<trial>__<trial>.json
-  report.json  report.md  report.html
+  report.json  report.md  report.html  diffs.html
 ```
 
 The Trial workspaces sit apart, in the folder `experiment.json` names under

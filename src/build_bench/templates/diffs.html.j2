@@ -1,0 +1,168 @@
+{#- diffs.html: rendered by html_report.py with autoescape on. Every value is escaped
+    unless html_report.py marked it as Markup. review.py works out every number;
+    diffs.js draws the diff viewer from the JSON in #data. -#}
+{% macro state_label(state) %}{{ "" if state == "built" else state }}{% endmacro %}
+<!doctype html>
+<html lang='en'>
+<head>
+<meta charset='utf-8'>
+<meta name='viewport' content='width=device-width, initial-scale=1'>
+<title>{{ data.experiment }} code</title>
+<style>
+{{ css }}</style>
+</head>
+<body>
+<main class='wide'>
+<button class='theme' id='theme' type='button'>Switch theme</button>
+<p class='back'><a href='report.html'>Back to the report</a></p>
+<h1>{{ data.experiment }}: the code</h1>
+<p class='muted'>Every file each Trial changed, read from the diffs saved in the results folder.
+Pick a cell to read that Trial's change to that file, with the Judges' Findings and Defect
+checks pinned on the lines they name.</p>
+{% if data.merge_failed %}
+<p class='warn'>Merging the Findings into Defects failed, so the Defects below may be missing
+Findings. <code>build-bench judge</code> tries it again.</p>
+{% endif %}
+{% if data.defects %}
+<h2 id='defects'>Defects</h2>
+<p class='muted'>Worst first, in the report's order. Open one to see the Trials that have it,
+which Judges found it in their own Verdict and which confirmed it when asked.</p>
+<ul class='defects'>
+{% for d in data.defects %}
+<li><details id='defect-{{ d.id }}'>
+<summary><span class='sev sev-{{ d.severity }}'>{{ d.severity }}</span>
+<strong>{{ d.id }}</strong> <span class='muted'>· {{ d.category }}{{ " · in the base commit" if d.in_base }}</span>
+{{ d.title }}</summary>
+<p class='muted'>{{ d.description }}</p>
+{% if d.trials %}
+<div class='scroll'><table>
+<thead><tr><th scope='col'>Trial</th><th scope='col'>Has it</th><th scope='col'>Found by</th>
+<th scope='col'>Confirmed by</th><th scope='col'>Said no</th><th scope='col'>Where</th></tr></thead>
+<tbody>
+{% for t in d.trials %}
+<tr><th scope='row'>{{ t.trial }}</th><td>{{ t.standing }}</td>
+<td>{{ t.found_by|join(", ") or "–" }}</td><td>{{ t.confirmed_by|join(", ") or "–" }}</td>
+<td>{{ t.denied_by|join(", ") or "–" }}</td>
+<td class='places'>
+{% for i in t.pins %}
+{% set p = pins[i] %}
+{% if p.path is not none %}
+<a href='{{ link(p.trial, p.path, p.id) }}'>{{ p.path }}{{ ":" ~ p.line if p.line is not none }}</a>
+{% else %}
+<a href='#unplaced-{{ p.trial }}'>not in the diff</a>
+{% endif %}
+{% else %}
+–
+{% endfor %}
+</td></tr>
+{% endfor %}
+</tbody>
+</table></div>
+{% else %}
+<p class='muted'>No Trial is known to have it.</p>
+{% endif %}
+</details></li>
+{% endfor %}
+</ul>
+{% endif %}
+<h2 id='files'>Files</h2>
+<p class='muted'>One row per file, one column per Trial: lines added and removed. The files the
+fewest Trials touched come first. A number in a badge counts the distinct Defects, and the
+Findings not merged into one, pinned in that file.</p>
+{% if data.rows %}
+<div class='scroll'><table class='matrix'>
+<thead>
+<tr><th scope='col' rowspan='2'>File</th>
+{% for v in data.variants %}
+<th scope='colgroup' colspan='{{ v.trials|length }}' class='group'>{{ v.name }}</th>
+{% endfor %}
+</tr>
+<tr>
+{% for tid in columns %}
+{% set t = data.trials[tid] %}
+<th scope='col' class='trial{{ " off" if t.state != "built" }}' title='{{ tid }}'>
+<span class='visually-hidden'>{{ t.variant }}-</span>{{ tid[t.variant|length + 1:] or tid }}
+{% if t.state != "built" %}<span class='state'>{{ t.state }}</span>{% endif %}
+{% if t.source == "diff.patch" %}<span class='state'>plain diff</span>{% endif %}
+</th>
+{% endfor %}
+</tr>
+</thead>
+<tbody>
+{% macro cells(row) %}
+{% for tid in columns %}
+{% set t = data.trials[tid] %}
+{% set c = row.cells.get(tid) %}
+{% if t.state != "built" %}
+<td class='off' aria-label='{{ t.state }}'></td>
+{% elif c %}
+<td><a class='cell' href='{{ link(tid, row.path) }}' data-trial='{{ tid }}' data-file='{{ row.path }}'
+ aria-label='{{ tid }}, {{ row.path }}: {{ c.added }} added, {{ c.removed }} removed{{ ", %d pinned"|format(c.pins) if c.pins }}'>
+<span class='add'>+{{ c.added }}</span> <span class='del'>−{{ c.removed }}</span>
+{% if c.pins %}<span class='badge'>{{ c.pins }}</span>{% endif %}</a></td>
+{% else %}
+<td class='none'></td>
+{% endif %}
+{% endfor %}
+{% endmacro %}
+{% for row in rows %}
+<tr><th scope='row' class='path'>{{ row.path }}</th>{{ cells(row) }}</tr>
+{% endfor %}
+{% if ignored %}
+<tr class='ignored-head'><th scope='row'><button type='button' class='toggle' id='toggle-ignored'
+ aria-expanded='false' aria-controls='ignored-rows'>{{ ignored|length }} ignored file{{ "s" if ignored|length != 1 }}</button></th>
+{% for tid in columns %}
+{% set t = data.trials[tid] %}
+{% set c = ignored_totals.get(tid) %}
+{% if t.state != "built" %}
+<td class='off' aria-label='{{ t.state }}'></td>
+{% elif c %}
+<td class='muted'><span class='add'>+{{ c.added }}</span> <span class='del'>−{{ c.removed }}</span></td>
+{% else %}
+<td class='none'></td>
+{% endif %}
+{% endfor %}
+</tr>
+</tbody>
+<tbody id='ignored-rows' hidden>
+{% for row in ignored %}
+<tr class='ignored'><th scope='row' class='path'>{{ row.path }}</th>{{ cells(row) }}</tr>
+{% endfor %}
+{% endif %}
+</tbody>
+</table></div>
+{% else %}
+<p class='muted'>No Trial left code changes.</p>
+{% endif %}
+<section id='viewer' aria-live='polite'>
+<p class='muted'>Pick a cell above to read a diff.</p>
+</section>
+{% if data.trials.values()|map(attribute="unplaced")|select|list %}
+<h2 id='not-in-diff'>Not in this diff</h2>
+<p class='muted'>Findings and Defect checks whose place could not be found in the Trial's diff:
+the file they name is not one it changed, or no file could be read from their words.</p>
+{% for tid in columns %}
+{% set t = data.trials[tid] %}
+{% if t.unplaced %}
+<h3 id='unplaced-{{ tid }}'>{{ tid }}</h3>
+<ul class='pins'>
+{% for i in t.unplaced %}
+{% set p = pins[i] %}
+<li class='pin sev-{{ p.severity }}' id='pin-{{ p.id }}'>
+<p class='pin-head'><span class='sev sev-{{ p.severity }}'>{{ p.severity }}</span>
+{{ p.kind }} by {{ p.judge }} · {{ p.category or "no category" }}{{ " · Defect " ~ p.defect if p.defect }}</p>
+<p class='pin-title'>{{ p.title }}</p>
+{% if p.detail %}<p class='pin-detail'>{{ p.detail }}</p>{% endif %}
+<p class='pin-where'>Where: {{ p.where or "not given" }}</p>
+</li>
+{% endfor %}
+</ul>
+{% endif %}
+{% endfor %}
+{% endif %}
+</main>
+<script type='application/json' id='data'>{{ payload }}</script>
+<script>
+{{ script }}</script>
+</body>
+</html>

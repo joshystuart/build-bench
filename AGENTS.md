@@ -32,8 +32,11 @@ It must pass before a change is done. CI runs the same command.
 - `compare.py` — the fourth judging step, for a Judge with `compare` set: which
   of two Trials is better (Comparisons).
 - `report.py`, `html_report.py` — `report`, including how a difference between
-  Variants is weighed against the spread between Trials; the HTML page's markup, styles and script
+  Variants is weighed against the spread between Trials; the HTML pages' markup, styles and scripts
   are in `templates/` (Jinja, autoescaped).
+- `review.py` — `diffs.html`'s data (each Trial's diff of each file, with the
+  Findings and Defect checks pinned by their `where`) and the `diff` command,
+  all from the saved `diff-full.patch` and `diff.patch`.
 - `presets/*.yaml`, `prices.yaml`, `prompts/*.md` — data, not code.
 
 ## Tests
