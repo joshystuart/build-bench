@@ -415,6 +415,7 @@ def _tree(trial: Trial) -> _Tree:
             if f.status == "renamed" and f.old_path:
                 tree.same_as[f.path] = f.old_path
                 tree.files[f.old_path] = None
+                tree.base.setdefault(f.path, None)
             continue
         old = [text for mark, text in f.lines if mark != "+"]
         new = [text for mark, text in f.lines if mark != "-"]
@@ -425,6 +426,7 @@ def _tree(trial: Trial) -> _Tree:
         elif f.status == "renamed" and f.old_path:
             tree.files[f.path], tree.files[f.old_path] = new, None
             tree.base[f.old_path] = old
+            tree.base.setdefault(f.path, None)
         else:
             tree.files[f.path], tree.base[f.path] = new, old
     return tree

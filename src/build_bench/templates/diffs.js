@@ -191,7 +191,7 @@
     }
     var base = other.lines.filter(function (r) { return r[0] !== '+'; })
       .map(function (r) { return r[3]; });
-    if (other.status === 'added') return { lines: [], note: trial + ' does not have this file.' };
+    if (other.status === 'added' || other.status === 'renamed') return { lines: [], note: trial + ' does not have this file.' };
     return { lines: base, note: trial + ' did not change this file: it has the base version.' };
   }
 

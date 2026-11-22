@@ -379,6 +379,22 @@ def test_diff_of_one_path_takes_a_shorter_path(review, cli):
     assert "Neither b-3 nor a-1 changed README.md" in err
 
 
+def test_diff_of_a_renamed_file_shows_it_missing_from_a_trial_that_left_it(review, cli):
+    settings, folder, _ = review
+    rename = (
+        "diff --git a/old.py b/new.py\nsimilarity index 50%\nrename from old.py\n"
+        "rename to new.py\n--- a/old.py\n+++ b/new.py\n@@ -1,2 +1,2 @@\n keep\n-old\n+new\n"
+    )
+    with (folder / "trials" / "a-1" / "diff-full.patch").open("a") as patch:
+        patch.write(rename)
+    code, out, err = cli("diff", settings, "a-1", "b-3", "new.py")
+    assert code == 0, err
+    assert out == (
+        "diff --git a-1/new.py b-3/new.py\n--- a-1/new.py\n+++ /dev/null\n"
+        "@@ -1,2 +0,0 @@\n-keep\n-new\n"
+    )
+
+
 def test_diff_refuses_an_unknown_trial_or_one_without_the_whole_file_diff(review, cli):
     settings, _, _ = review
     code, out, err = cli("diff", settings, "a-1", "zz-9")
