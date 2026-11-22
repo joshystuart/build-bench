@@ -48,6 +48,19 @@ def _parser() -> argparse.ArgumentParser:
         "Defects, Defect checks and Comparisons",
     )
     add("report", "Write the comparison of the Variants.")
+    diff = commands.add_parser(
+        "diff",
+        help="Print a unified diff of one Trial's code against another's.",
+        description="Print a unified diff of one Trial's final files against another's, "
+        "rebuilt from their diff-full.patch. Put the settings file first to name one.",
+    )
+    diff.add_argument(
+        "words",
+        nargs="+",
+        metavar="[settings] trial trial [path]",
+        help="two Trial ids, such as fast-1 slow-2, and a file to compare only that",
+    )
+    diff.add_argument("--results", metavar="DIR", help="results folder (default: the latest one)")
     add("all", "run, judge and report in series, into a new results folder.", results=False)
     clean = commands.add_parser(
         "clean",
@@ -69,7 +82,10 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = _parser().parse_args(argv)
+    parser = _parser()
+    args = parser.parse_args(argv)
+    if args.command == "diff":
+        _diff_words(parser, args)
     try:
         path = args.settings or settings_module.find_default(Path.cwd())
         settings = settings_module.load(path)
@@ -149,6 +165,30 @@ def _report(settings, args, folder: Path | None = None) -> int:
     return OK
 
 
+def _diff_words(parser: argparse.ArgumentParser, args) -> None:
+    """Split `diff`'s words into the settings file, two Trials and a path. The
+    first word is the settings file when there are three or more and it is a file."""
+    words = list(args.words)
+    args.settings = None
+    if len(words) >= 3 and Path(words[0]).is_file():
+        args.settings = words.pop(0)
+    if not 2 <= len(words) <= 3:
+        parser.error("diff takes two Trials and, optionally, one path")
+    args.first, args.second = words[:2]
+    args.path = words[2] if len(words) == 3 else None
+
+
+def _diff(settings, args) -> int:
+    from .review import trial_diff
+
+    folder = pick_folder(settings, args.results)
+    out, notes = trial_diff(folder, args.first, args.second, args.path)
+    sys.stdout.write(out)
+    for note in notes:
+        print(note, file=sys.stderr)
+    return OK
+
+
 def _all(settings, args) -> int:
     # Check every login before building anything, so judging cannot fail on a
     # missing key after hours of Trials.
@@ -178,7 +218,14 @@ def _clean(settings, args) -> int:
     return OK
 
 
-COMMANDS = {"run": _run, "judge": _judge, "report": _report, "all": _all, "clean": _clean}
+COMMANDS = {
+    "run": _run,
+    "judge": _judge,
+    "report": _report,
+    "diff": _diff,
+    "all": _all,
+    "clean": _clean,
+}
 
 
 if __name__ == "__main__":

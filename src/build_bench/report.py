@@ -308,7 +308,7 @@ def _severity_order(defect: dict) -> tuple[int, int, int]:
     )
 
 
-def _defects(merged: dict, trials: list, judges: list[str]) -> list[dict]:
+def settled_defects(merged: dict, trials: list, judges: list[str]) -> list[dict]:
     """The Defects, worst first. A Defect is as severe as the Judges voted when
     they said a Trial has it, or as its worst Finding until any has."""
     votes: dict[str, list[str]] = {}
@@ -453,7 +453,7 @@ def build_report(settings: Settings, folder: Path) -> dict:
     # Findings a failed merge left out of every Defect would make the counts too
     # low, so after a failed merge no Defect count is known.
     merge_failed = bool(merged) and merged.get("status") != "ok"
-    defects = _defects(merged, trials, judges) if merged and not merge_failed else None
+    defects = settled_defects(merged, trials, judges) if merged and not merge_failed else None
     # Each Check's result on the base commit, when `run` ran them there.
     on_base = _each_check(read_json(folder / "base-checks.json") or {})
     fails_on_base = {name for name, result in on_base.items() if result != "passed"}
@@ -977,6 +977,8 @@ def tables(data: dict) -> list[Table]:
     return found
 
 
+#: What the link to diffs.html says.
+DIFFS = "The code each Trial produced, with the Judges' Findings pinned on it:"
 #: How to try failed judging again, under the list of what failed.
 RETRY = "`build-bench judge` tries these again; it keeps every step that succeeded."
 
@@ -1071,7 +1073,7 @@ def flag_lines(data: dict) -> list[str]:
 
 
 def markdown(data: dict) -> str:
-    out = [f"# {data['experiment']}", ""]
+    out = [f"# {data['experiment']}", "", f"{DIFFS} [diffs.html](diffs.html)", ""]
     out += flag_lines(data) + [""]
     for table in tables(data):
         out += [f"## {table.title}", ""]
@@ -1110,10 +1112,12 @@ def markdown(data: dict) -> str:
 
 
 def report(settings: Settings, folder: Path) -> list[Path]:
-    from .html_report import html
+    from .html_report import diffs_html, html
+    from .review import page_data
 
     data = build_report(settings, folder)
     write_json(folder / "report.json", data)
     (folder / "report.md").write_text(markdown(data))
     (folder / "report.html").write_text(html(data))
-    return [folder / "report.json", folder / "report.md", folder / "report.html"]
+    (folder / "diffs.html").write_text(diffs_html(page_data(settings, folder)))
+    return [folder / name for name in ("report.json", "report.md", "report.html", "diffs.html")]

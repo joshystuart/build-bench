@@ -1,27 +1,32 @@
-"""One self-contained HTML page: what went wrong, the summary tables and a timeline.
+"""Self-contained HTML pages: report.html and diffs.html.
+
+report.html is what went wrong, the summary tables and a timeline. diffs.html
+is the code each Trial produced (see `review.py`, which works out its data).
 
 No network: styles and script are inline, the timeline is inline SVG. It has a
 "Show as table" alternative, every agent's row takes keyboard focus and shows
 its tooltip on focus, and the page follows the system light or dark theme with
 a button to switch.
 
-The markup is in `templates/report.html.j2`, with styles and script beside it in
-`report.css` and `report.js`. This module works out what goes on the page,
+The markup is in `templates/report.html.j2` and `diffs.html.j2`, with styles and
+scripts beside them. This module works out what goes on the page,
 including where every timeline bar goes. The template prints it, and autoescape
 escapes every value.
 """
 
 from __future__ import annotations
 
+import json
 import math
 import re
 from dataclasses import dataclass, field
 from importlib.resources import files
+from urllib.parse import quote
 
 from jinja2 import Environment, PackageLoader, StrictUndefined
 from markupsafe import Markup, escape
 
-from .report import RETRY, failed_judging_lines, first_paragraph, flag_lines, tables
+from .report import DIFFS, RETRY, failed_judging_lines, first_paragraph, flag_lines, tables
 
 _TEMPLATES = files("build_bench") / "templates"
 
@@ -272,6 +277,55 @@ def html(data: dict) -> str:
         timeline=_timeline(timed) if timed else None,
         failed_judging=failed_judging_lines(data),
         retry=RETRY.replace("`", ""),
+        diffs=DIFFS,
         css=Markup((_TEMPLATES / "report.css").read_text()),
         script=Markup((_TEMPLATES / "report.js").read_text()),
+    )
+
+
+def embedded_json(data: object) -> Markup:
+    """JSON that is safe inside a <script> element: no `</script>` or `<!--` can
+    end it early, whatever a diff holds."""
+    text = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+    for char, code in (("&", "\\u0026"), ("<", "\\u003c"), (">", "\\u003e")):
+        text = text.replace(char, code)
+    return Markup(text)
+
+
+def view_link(trial: str, path: str | None = None, pin: int | None = None) -> str:
+    """The diffs.html address of one Trial's diff of one file, or of one pin on it."""
+    parts = [f"trial={quote(trial, safe='')}"]
+    if path is not None:
+        parts.append(f"file={quote(path, safe='/')}")
+    if pin is not None:
+        parts.append(f"pin={pin}")
+    return "#" + "&".join(parts)
+
+
+def _ignored_totals(data: dict) -> dict[str, dict[str, int]]:
+    """Each Trial's lines added and removed over the files the ignore globs match."""
+    totals: dict[str, dict[str, int]] = {}
+    for row in data["rows"]:
+        if row["ignored"]:
+            for trial, c in row["cells"].items():
+                total = totals.setdefault(trial, {"added": 0, "removed": 0, "files": 0})
+                total["added"] += c["added"]
+                total["removed"] += c["removed"]
+                total["files"] += 1
+    return totals
+
+
+def diffs_html(data: dict) -> str:
+    css = (_TEMPLATES / "report.css").read_text() + (_TEMPLATES / "diffs.css").read_text()
+    return _ENV.get_template("diffs.html.j2").render(
+        data=data,
+        columns=[tid for v in data["variants"] for tid in v["trials"]],
+        rows=[r for r in data["rows"] if not r["ignored"]],
+        ignored=[r for r in data["rows"] if r["ignored"]],
+        ignored_totals=_ignored_totals(data),
+        pins=data["pins"],
+        link=view_link,
+        payload=embedded_json(data),
+        css=Markup(css),
+        script=Markup((_TEMPLATES / "diffs.js").read_text()),
     )

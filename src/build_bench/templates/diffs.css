@@ -1,0 +1,97 @@
+
+/* Styles for diffs.html, after report.css's, inlined into the page so it needs no network. */
+
+:root { --add-bg: #e3f4e6; --add-fg: #1f7a35; --del-bg: #fbe5e4; --del-fg: #b3261e;
+  --pin-bg: #fff6dc; --hunk: #eef1f6; --hatch: rgba(11, 11, 11, 0.05); --focus: #2a78d6;
+  --sev-critical: #c62a2f; --sev-major: #eb6834; --sev-minor: #b58a00; --sev-nit: #898781; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --add-bg: #12301b; --add-fg: #6fd08a; --del-bg: #3a1716; --del-fg: #ff8a80;
+  --pin-bg: #2e2712; --hunk: #1d2330; --hatch: rgba(255, 255, 255, 0.05); --focus: #3987e5;
+  --sev-critical: #e5484d; --sev-major: #d95926; --sev-minor: #d6a917; --sev-nit: #898781; } }
+:root[data-theme="dark"] {
+  --add-bg: #12301b; --add-fg: #6fd08a; --del-bg: #3a1716; --del-fg: #ff8a80;
+  --pin-bg: #2e2712; --hunk: #1d2330; --hatch: rgba(255, 255, 255, 0.05); --focus: #3987e5;
+  --sev-critical: #e5484d; --sev-major: #d95926; --sev-minor: #d6a917; --sev-nit: #898781; }
+main.wide { max-width: 1400px; }
+a { color: var(--main); }
+a:focus-visible, button:focus-visible, select:focus-visible, .pin:focus-visible {
+  outline: 2px solid var(--focus); outline-offset: 2px; }
+h3 { font-size: 16px; margin: 24px 0 6px; }
+code { font: 13px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.back { margin: 0; font-size: 13px; }
+.warn { border-left: 3px solid var(--bad); padding: 4px 12px; }
+.sev { display: inline-block; font-size: 12px; font-weight: 600; border-radius: 999px;
+  padding: 0 8px; color: #fff; background: var(--sev-nit); }
+.sev-critical { background: var(--sev-critical); }
+.sev-major { background: var(--sev-major); }
+.sev-minor { background: var(--sev-minor); }
+.defects { list-style: none; padding: 0; margin: 0; }
+.defects > li { background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+  padding: 8px 14px; margin: 0 0 8px; }
+.defects details { margin: 0; }
+.defects summary { color: var(--fg); font-size: 14px; }
+.places a { margin-right: 8px; white-space: nowrap; }
+table.matrix th.path { font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-weight: 400; white-space: nowrap; }
+table.matrix th.group { text-align: center; border-bottom: 2px solid var(--axis); }
+table.matrix th.trial { text-align: center; }
+table.matrix td { text-align: center; padding: 2px 4px; }
+.state { display: block; font-weight: 400; font-size: 12px; color: var(--bad); }
+td.off, th.trial.off { background: repeating-linear-gradient(45deg, var(--hatch) 0 6px,
+  transparent 6px 12px); }
+th.trial.off { color: var(--faint); }
+a.cell { display: inline-block; padding: 3px 8px; border-radius: 6px; text-decoration: none;
+  color: var(--fg); font-size: 13px; }
+a.cell:hover { background: var(--grid); }
+a.cell[aria-current='true'] { background: var(--grid); box-shadow: inset 0 0 0 1.5px var(--main); }
+.add { color: var(--add-fg); }
+.del { color: var(--del-fg); }
+.badge { display: inline-block; min-width: 1.6em; margin-left: 4px; border-radius: 999px;
+  background: var(--sev-major); color: #fff; font-size: 11px; font-weight: 650; padding: 0 5px; }
+.toggle, .control { font: inherit; font-size: 13px; color: var(--fg); background: var(--surface);
+  border: 1px solid var(--border); border-radius: 6px; padding: 3px 10px; cursor: pointer; }
+.toggle:hover, .control:hover { background: var(--grid); }
+tr.ignored th.path { color: var(--muted); }
+#viewer { margin-top: 32px; scroll-margin-top: 12px; }
+.viewer-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px;
+  margin: 0 0 10px; }
+/* Focus lands on the heading so a screen reader reads the new view; it is not a control. */
+#viewer-title:focus { outline: none; }
+.viewer-head h2 { margin: 0; font: 600 16px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+  word-break: break-all; }
+.viewer-head label { font-size: 13px; color: var(--muted); }
+.viewer-note { font-size: 13px; color: var(--muted); margin: 0 0 8px; }
+table.diff { width: 100%; border-collapse: collapse; margin: 0; table-layout: fixed;
+  font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--surface);
+  border: 1px solid var(--border); }
+table.diff td { border: 0; padding: 0 8px; text-align: left; white-space: pre-wrap;
+  word-break: break-all; vertical-align: top; }
+table.diff td.num { width: 4.5em; text-align: right; color: var(--faint); user-select: none;
+  white-space: nowrap; padding: 0 6px; }
+table.diff td.mark { width: 1.4em; padding: 0 2px; text-align: center; user-select: none; }
+table.diff tr.add td { background: var(--add-bg); }
+table.diff tr.del td { background: var(--del-bg); }
+table.diff tr.add td.mark { color: var(--add-fg); }
+table.diff tr.del td.mark { color: var(--del-fg); }
+table.diff tr.gap td { background: var(--hunk); color: var(--muted); padding: 2px 8px; }
+table.diff tr.gap button { font: inherit; color: var(--main); background: none; border: 0;
+  padding: 0; cursor: pointer; text-decoration: underline; }
+table.diff tr.pin-row td { padding: 6px 10px 8px 6em; white-space: normal; word-break: normal;
+  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+.pins { list-style: none; padding: 0; margin: 0 0 12px; }
+.pin { background: var(--pin-bg); border: 1px solid var(--border); border-left: 3px solid var(--sev-nit);
+  border-radius: 8px; padding: 8px 12px; margin: 0 0 6px; }
+.pin.sev-critical { border-left-color: var(--sev-critical); }
+.pin.sev-major { border-left-color: var(--sev-major); }
+.pin.sev-minor { border-left-color: var(--sev-minor); }
+.pin.target { box-shadow: 0 0 0 2px var(--focus); }
+.pin p { margin: 0; }
+.pin-head { font-size: 13px; color: var(--muted); }
+.pin-title { font-weight: 600; margin-top: 2px; }
+.pin-detail { white-space: pre-wrap; margin-top: 4px; }
+.pin-where { font-size: 12px; color: var(--faint); margin-top: 4px; word-break: break-all; }
+/* The file names stay in view while the Trials scroll sideways. */
+table.matrix th:first-child { position: sticky; left: 0; background: var(--page); z-index: 1; }
+table.matrix thead th { min-width: 5.5em; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden;
+  clip-path: inset(50%); white-space: nowrap; }
