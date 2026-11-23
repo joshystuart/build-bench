@@ -270,7 +270,7 @@ def _line(value: dict, key: str) -> str:
     if found is None:
         return ""
     if isinstance(found, int | float) and not isinstance(found, bool):
-        found = f"{found:g}"
+        found = str(found)
     if not isinstance(found, str):
         raise VerdictError(f"{key} is not text")
     return " ".join(found.split())
