@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 from . import settings as settings_module
-from .results import ResultsError, all_folders, new_folder, pick_folder
+from .results import ResultsError, all_folders, new_folder, pick_folder, read_json
 
 #: Exit codes: 0 all good, 1 a Trial or Verdict failed, 2 nothing could start,
 #: 130 stopped with Ctrl+C.
@@ -121,20 +121,19 @@ class _Unusable(Exception):
     pass
 
 
-def _need_env(settings, *, judges: bool, writer_only: bool = False) -> None:
-    """Check the logins a phase needs: the builders', and with `judges` every
-    Judge's and the insights writer's; or, with `writer_only`, the writer's alone."""
-    if writer_only:
-        missing = settings_module.writer_env(settings)
-    else:
-        missing = settings_module.required_env(settings, judges=judges)
+def _need_env(settings, *, judges: bool, writer: bool = False, builders: bool = True) -> None:
+    """Check the logins a phase needs: the builders' (unless not `builders`), every
+    Judge's with `judges`, and the insights writer's with `writer`."""
+    missing = settings_module.required_env(settings, judges=judges) if builders else []
+    if writer:
+        missing += settings_module.writer_env(settings)
     if missing:
-        raise _Unusable("missing environment variable(s): " + ", ".join(missing))
-    if judges or writer_only:
-        try:
-            settings_module.log_in_judges(settings, [settings.writer] if writer_only else None)
-        except Exception as error:  # noqa: BLE001 - whatever LiteLLM raises, nothing can start
-            raise _Unusable(f"the GitHub Copilot login failed: {error}") from None
+        raise _Unusable("missing environment variable(s): " + ", ".join(dict.fromkeys(missing)))
+    logins = (list(settings.judges) if judges else []) + ([settings.writer] if writer else [])
+    try:
+        settings_module.log_in_judges(logins)
+    except Exception as error:  # noqa: BLE001 - whatever LiteLLM raises, nothing can start
+        raise _Unusable(f"the GitHub Copilot login failed: {error}") from None
 
 
 def _run(settings, args, folder: Path | None = None) -> int:
@@ -179,11 +178,14 @@ def _report(settings, args, folder: Path | None = None) -> int:
     written = report(settings, folder)
     for path in written:
         print(f"Wrote {path}")
-    if (folder / "insights.json").exists() and folder / "insights.html" not in written:
-        print(
-            "insights.html was not written: the results changed since its words were. "
-            "`build-bench insights` asks for them again."
+    saved = read_json(folder / "insights.json")
+    if saved is not None and folder / "insights.html" not in written:
+        why = (
+            "the results changed since its words were written"
+            if saved.get("status") == "ok"
+            else f"the last `build-bench insights` failed ({saved.get('reason')})"
         )
+        print(f"insights.html was not written: {why}. `build-bench insights` asks again.")
     return OK
 
 
@@ -194,11 +196,14 @@ def _insights(settings, args, folder: Path | None = None) -> int:
         raise _Unusable("no model to write the insights: add `insights` or a Judge to the settings")
     if folder is None:
         # `all` checked every login before it built anything.
-        _need_env(settings, judges=False, writer_only=True)
+        _need_env(settings, judges=False, writer=True, builders=False)
         folder = pick_folder(settings, args.results)
         print(f"Results: {folder}")
-    ok = insights(settings, folder, fresh=getattr(args, "fresh", False))
-    _report(settings, args, folder)
+    try:
+        ok = insights(settings, folder, fresh=getattr(args, "fresh", False))
+    finally:
+        # The report, and the page when the words fit, whatever became of asking.
+        _report(settings, args, folder)
     return OK if ok else FAILED
 
 
@@ -229,7 +234,7 @@ def _diff(settings, args) -> int:
 def _all(settings, args) -> int:
     # Check every login before building anything, so judging cannot fail on a
     # missing key after hours of Trials.
-    _need_env(settings, judges=True)
+    _need_env(settings, judges=True, writer=settings.writer is not None)
     folder = new_folder(settings)
     done = [_run(settings, args, folder), _judge(settings, args, folder)]
     # The insights step writes the report too, and the page from the report's numbers.

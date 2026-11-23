@@ -12,8 +12,8 @@
 {% if r.waiting %}<span class='fill wait' style='width: {{ r.waiting|px }}%'></span>{% endif %}
 {% else %}
 <span class='fill' style='width: {{ r.width|px }}%'></span>
-{% for d in r.dots %}<span class='dot' style='left: {{ d|px }}%'></span>{% endfor %}
 {% endif %}
+{% for d in r.dots %}<span class='dot' style='left: {{ d|px }}%'></span>{% endfor %}
 </span>
 <span class='val'>{{ r.label }}</span>
 </div>
@@ -111,8 +111,8 @@ better. Each dot is one build.</p>
 <section>
 <p class='eyebrow'>Time</p>
 <h2>{{ heading.time }}</h2>
-<p class='note'>Active minutes per build, on average.{% if waiting %} Solid: the main agent working.
-Striped: the main agent waiting on subagents.{% endif %}</p>
+<p class='note'>Active minutes per build, on average. Each dot is one build.{% if waiting %} Solid:
+the main agent working. Striped: the main agent waiting on subagents.{% endif %}</p>
 {% if waiting %}
 <ul class='legend' aria-label='Legend'>
 <li><span class='sw work'></span>Main agent working</li>

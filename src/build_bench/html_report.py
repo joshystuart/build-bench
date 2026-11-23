@@ -593,7 +593,7 @@ def _runs(data: dict, role_of: dict[str, str], pick: str | None) -> tuple[list[R
             spans += [span("idle", s, e, 6, idle_tip.format(_clock(e - s)), h=2) for s, e in idle]
             lanes = _lanes(subs)
             for sub, lane in zip(subs, lanes, strict=True):
-                tip = f"{sub['name']} · {_clock(sub['start'])} to {_clock(sub['end'])}"
+                tip = f"{sub['name']} · ran {_clock(sub['end'] - sub['start'])}"
                 y = row + 2 * gap + lane * (row + gap)
                 spans.append(
                     span(role_of.get(sub["name"], "other"), sub["start"], sub["end"], y, tip, 3.0)
@@ -683,8 +683,8 @@ def _quality_stats(data: dict) -> list[tuple[str, str]]:
         stats.append((f"{sum(bool(r['checks_passed']) for r in trials)}/{len(trials)}", label))
     measured = [d["measures"]["defects"] for d in data["differences"] if d["measures"]["defects"]]
     if measured and data["defects"] is not None:
-        beyond = sum(1 for m in measured if m["weight"] in ("clear", "possible"))
-        stats.append((str(beyond), f"of {len(measured)} differences in quality beyond noise"))
+        clear = sum(1 for m in measured if m["weight"] == "clear")
+        stats.append((str(clear), f"of {len(measured)} differences in quality are clear"))
     return stats
 
 
@@ -742,7 +742,8 @@ def insights_html(settings, folder: Path, data: dict, saved: dict) -> str:
     pick = words["pick"]
     experiment = read_json(folder / "experiment.json") or {}
     started = experiment.get("started_at")
-    date = time.strftime("%-d %b %Y", time.localtime(started)) if started else ""
+    when = time.localtime(started) if started else None
+    date = f"{when.tm_mday} {time.strftime('%b %Y', when)}" if when else ""
     role_names, role_of = _roles(words)
     groups, scale = _runs(data, role_of, pick)
     defects = [d for d in data["defects"] or [] if not d["in_base"]]

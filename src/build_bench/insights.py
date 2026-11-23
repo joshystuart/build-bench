@@ -269,6 +269,8 @@ def _line(value: dict, key: str) -> str:
     found = value.get(key)
     if found is None:
         return ""
+    if isinstance(found, int | float) and not isinstance(found, bool):
+        found = f"{found:g}"
     if not isinstance(found, str):
         raise VerdictError(f"{key} is not text")
     return " ".join(found.split())
@@ -290,7 +292,11 @@ def _strings(value: dict, key: str) -> list[str]:
 
 
 def _mapping(value: dict, key: str) -> dict[str, str]:
+    """Text by name. A name left null is left out, so the page uses its own words."""
     found = value.get(key) or {}
-    if not isinstance(found, dict) or not all(isinstance(v, str) for v in found.values()):
+    if not isinstance(found, dict):
+        raise VerdictError(f"{key} is not a mapping of text")
+    found = {k: v for k, v in found.items() if v is not None}
+    if not all(isinstance(v, str) for v in found.values()):
         raise VerdictError(f"{key} is not a mapping of text")
     return {k: " ".join(v.split()) for k, v in found.items()}

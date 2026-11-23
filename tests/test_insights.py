@@ -84,15 +84,18 @@ def test_the_writer_is_asked_once_and_the_page_is_drawn(saved, cli, writer):  # 
 
 def test_the_page_draws_the_reports_numbers_around_the_words(saved, cli, writer):  # noqa: F811
     settings, folder = saved
+    # Noon UTC, so 1 January wherever the test runs.
+    write(folder / "experiment.json", {"name": "demo", "started_at": 1767268800})
     writer.reply = replies.fenced(
         {
             "headline": "<script>alert(1)</script> v1 is *cheaper*",
             "pick": "v1",
             "pick_title": "Use v1",
-            "sections": {"cost": "v2 costs *more*"},
+            # A heading left null gets the page's own; a number is text.
+            "sections": {"cost": "v2 costs *more*", "quality": None},
             "roles": [{"name": "Explore", "subagents": ["explore"]}],
             "defect_titles": {"D1": "mul is not there", "D9": "no such Defect"},
-            "stats": [{"value": "+50%", "label": "cost of v2"}] * 5,
+            "stats": [{"value": 50, "label": "cost of v2"}] * 5,
         }
     )
     assert cli("insights", settings)[0] == 0
@@ -102,7 +105,9 @@ def test_the_page_draws_the_reports_numbers_around_the_words(saved, cli, writer)
     assert "<script>alert" not in page
     assert "&lt;script&gt;alert(1)&lt;/script&gt; v1 is <em>cheaper</em>" in page
     assert "v2 costs <em>more</em>" in page
-    assert page.count("cost of v2") == 3  # the page has room for three stats
+    assert page.count("<b>50</b><span>cost of v2") == 3  # the page has room for three stats
+    assert "<h2>Defects per build</h2>" in page
+    assert "Build experiment · demo · 1 Jan 2026" in page
     assert "Pick: Use v1" in page
     # Works offline, in either theme.
     assert not re.search(r"""(src|href)=['"]?(https?:)?//""", page)
@@ -130,6 +135,7 @@ def test_the_page_draws_the_reports_numbers_around_the_words(saved, cli, writer)
     # v1's main agent waited on its subagent for half a minute a build, on average.
     time = page.split("aria-label='Active minutes per build'")[1].split("</section>")[0]
     assert time.count("class='fill wait'") == 1
+    assert time.count("class='dot'") == 4  # one per finished build
     assert "<span class='sw r1'></span>Explore" in page
     assert "class='span r1'" in page
     assert "one 15-minute scale of active time" in page
@@ -154,7 +160,7 @@ def test_report_draws_the_page_again_only_from_the_same_results(
     code, out, _ = cli("report", settings)
     assert code == 0
     assert "insights.html" not in "".join(line for line in out.splitlines() if "Wrote" in line)
-    assert "`build-bench insights` asks for them again" in out
+    assert "the results changed since its words were written. `build-bench insights` asks" in out
     assert "href='insights.html'" not in (folder / "report.html").read_text()
 
 
@@ -167,6 +173,10 @@ def test_a_reply_the_page_cannot_use_fails(saved, cli, writer):  # noqa: F811
     assert record["status"] == "failed"
     assert record["reason"] == "pick is 'v9', which is no Variant"
     assert "error: the insights failed: pick is 'v9', which is no Variant" in out
+    assert (
+        "insights.html was not written: the last `build-bench insights` failed "
+        "(pick is 'v9', which is no Variant)" in out
+    )
     assert not (folder / "insights.html").exists()
     assert (folder / "insights.reply.md").read_text() == writer.reply
     # The report is still written.
@@ -194,6 +204,10 @@ def test_the_settings_can_name_another_writer(saved, cli, writer, monkeypatch): 
     monkeypatch.delenv("MY_KEY", raising=False)
     code, _, err = cli("insights", settings)
     assert code == 2 and "MY_KEY" in err
+    # Only `insights` and `all` ask the writer, so `judge` does not need its key: it
+    # gets past the logins to the folder, which is not a results folder.
+    code, _, err = cli("judge", settings, "--results", settings.parent)
+    assert code == 2 and "not a results folder" in err and "MY_KEY" not in err
     monkeypatch.setenv("MY_KEY", "sk-mine")
     # Another model writes again, though the results have not changed.
     assert cli("insights", settings)[0] == 0

@@ -202,11 +202,10 @@ class Settings(_Strict):
         return self.auth_env or DEFAULT_AUTH_ENV[self.auth]
 
     def agents(self, *, judges: bool) -> list[str]:
-        """The agents the Variants start and, with `judges`, the Agent Judges and
-        the insights writer too."""
+        """The agents the Variants start and, with `judges`, the Agent Judges too."""
         used: list[str] = [v.agent for v in self.variants]
         if judges:
-            used += [j.type for j in self.model_users() if j.type != "api"]
+            used += [j.type for j in self.judges if j.type != "api"]
         return list(dict.fromkeys(used))
 
     @property
@@ -219,11 +218,6 @@ class Settings(_Strict):
     def writer(self) -> Judge | None:
         """The model that writes insights.html: `insights`, else the merge Judge."""
         return self.insights.as_judge() if self.insights is not None else self.merger
-
-    def model_users(self) -> list[Judge]:
-        """Every Judge, and the insights writer when it is not one of them."""
-        writer = [self.insights.as_judge()] if self.insights is not None else []
-        return [*self.judges, *writer]
 
     def version_pin(self, agent: str) -> str | None:
         return self.claude_version if agent == "claude" else self.copilot_version
@@ -477,7 +471,7 @@ def required_env(s: Settings, *, judges: bool) -> list[str]:
     if "claude" in s.agents(judges=judges):
         needed.append(s.auth_variable)
     if judges:
-        needed += [n for j in s.model_users() for n in judge_env(j)]
+        needed += [n for j in s.judges for n in judge_env(j)]
     return [n for n in dict.fromkeys(needed) if not os.environ.get(n)]
 
 
@@ -509,12 +503,10 @@ def judge_env(judge: Judge) -> list[str]:
     return list(found.get("missing_keys") or [])
 
 
-def log_in_judges(s: Settings, judges: list[Judge] | None = None) -> None:
-    """Log in every Judge (and the insights writer), or only `judges`, that logs in
-    by itself, while someone is at the terminal: a GitHub Copilot model with no
-    saved login prints a code to enter at github.com."""
-    if judges is None:
-        judges = s.model_users()
+def log_in_judges(judges: list[Judge]) -> None:
+    """Log in each of these Judges (or the insights writer) that logs in by itself,
+    while someone is at the terminal: a GitHub Copilot model with no saved login
+    prints a code to enter at github.com."""
     if any(j.type == "api" and j.model.startswith(COPILOT) for j in judges):
         from litellm.llms.github_copilot.authenticator import Authenticator
 
