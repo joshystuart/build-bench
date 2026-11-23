@@ -219,7 +219,15 @@ class Reader:
             found.seconds = (timings.get("pre_build_seconds") or 0) + (
                 timings.get("agent_seconds") or 0
             )
-        if stream_file.exists():
+        post_build = trial.folder / "post_build.log"
+        if found.state == "running" and post_build.exists():
+            steps = [line[2:] for line in post_build.read_text(errors="replace").splitlines()
+                     if line.startswith("$ ")]  # fmt: skip
+            found.phase = f"post_build: {steps[-1]}" if steps else "post_build"
+            found.last_at = post_build.stat().st_mtime
+            if stream_file.exists():
+                found.stream = self.stream(stream_file)
+        elif stream_file.exists():
             found.stream = self.stream(stream_file)
             found.last_at = stream_file.stat().st_mtime
             if found.state == "running":

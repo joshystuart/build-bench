@@ -20,7 +20,7 @@ It must pass before a change is done. CI runs the same command.
 - `settings.py` — loading and checking the settings file; presets.
 - `agent.py` — starting headless Claude Code or the Copilot CLI (the one
   place that knows how; see `docs/headless-trials.md`).
-- `run.py` — `run`: workspaces, `pre_build`, the checks on the base commit,
+- `run.py` — `run`: workspaces, `pre_build`, `post_build`, the checks on the base commit,
   diffs, concurrency, resume.
 - `progress.py` — the live display `run` draws in a terminal, read from the
   files the Trials write.

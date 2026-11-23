@@ -13,6 +13,7 @@ base: 6ec95b3                   # any commit-ish in that repository
 plan: .scratch/my-plan          # optional; may be ignored by git
 results: .bench/results         # optional; this is the default
 pre_build: [npm ci]             # optional; run in each Trial before the agent
+post_build: [docker compose down -v]   # optional; run in each Trial once it ends, however it ended
 env:                            # optional; variables for every command and agent the Experiment starts
   PATH: $HOME/.local/share/mise/shims:${PATH}
 runtime_check: node --version | grep -q '^v24\.'   # optional; must pass before each build and the checks
@@ -111,7 +112,7 @@ Check's output, cut to its end.
 Every process build-bench starts for an Experiment inherits the shell it was
 started from, so a build can run on a different Node or Python than the base
 commit pins. `env` sets variables for all of them: `runtime_check`,
-`pre_build`, `copy_setup`, the checks, the building agents, and Agent Judges
+`pre_build`, `post_build`, `copy_setup`, the checks, the building agents, and Agent Judges
 in every judging step. Its `PATH` also decides which `claude` or `copilot` is
 found and whose version is checked. build-bench's own `git` calls do not use
 it.
@@ -188,6 +189,35 @@ copy_setup:
 
 Neither setting undoes what the checks change outside the folder: rows written
 to a database the Trial started, containers, files elsewhere on the machine.
+
+## Cleaning up after a Trial
+
+`post_build` is a list of commands run in each Trial's workspace once the
+Trial ends: after the agent and the diffs, after a failed `pre_build`, after a
+crash, and after Ctrl+C stops it. Use it to stop what `pre_build` or the agent
+started outside the folder, such as containers and the ports and networks they
+hold, so Trials running at once or one after another do not pile them up.
+
+```yaml
+pre_build: [docker compose up -d --wait]
+post_build: [docker compose down -v --remove-orphans]
+```
+
+- Every step runs, even after one fails, so each gets its chance to clean up.
+  Write them so they succeed when there is nothing to stop.
+- A second Ctrl+C kills the agents at once but does not cut a Trial's
+  steps short; `run` waits for the Trials' teardowns to finish.
+- A failing step does not change how the Trial ended. `run` prints a
+  `[warn]` line, and `status.json` keeps the first failure as
+  `post_build_failure`. The output is in `post_build.log` and the time in
+  `timings.json` as `post_build_seconds`, which is not part of the Trial's time.
+- It also runs in the base commit's workspace after the checks there (its
+  output is in `base-checks.log`).
+- It runs before `judge`, so checks that need what `pre_build` started must
+  start it again: in `copy_setup`, or in the checks themselves with
+  `checks_in_place: true`.
+- A run killed outright (not stopped with Ctrl+C) skips it; clean up by hand
+  before `run --resume` or `clean`.
 
 ## Checks on the base commit
 

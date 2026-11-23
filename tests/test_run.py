@@ -7,6 +7,8 @@ from pathlib import Path
 import yaml
 from conftest import API_KEY, OAUTH_TOKEN, git, press_ctrl_c, results_folder, workspace_home
 
+from build_bench.agent import STOPPED
+
 # --- Settings ------------------------------------------------------------------
 
 
@@ -554,6 +556,70 @@ def test_a_failing_pre_build_step_fails_the_trial_before_the_agent(experiment, f
     assert "[fail]  alpha-1 pre_build" in out
 
 
+def test_post_build_runs_after_every_trial_however_it_ended(experiment, fake, cli, tmp_path):
+    # Each Trial's pre_build "starts a container" named after its workspace;
+    # post_build stops it. A Trial whose agent crashes is torn down too.
+    running = tmp_path / "running"
+    running.mkdir()
+    fake.set(per_cwd={"/v1-2/": "crash"})
+    settings = two_by_three(
+        experiment,
+        pre_build=[f'touch "{running}/$(basename "$(dirname "$PWD")")"'],
+        post_build=[f'rm "{running}/$(basename "$(dirname "$PWD")")"'],
+    )
+    code, out, _ = cli("run", settings)
+    assert code == 1
+    assert list(running.iterdir()) == []
+    folder = results_folder(settings)
+    for trial in ("v1-1", "v1-2", "v2-3"):
+        log = (folder / "trials" / trial / "post_build.log").read_text()
+        assert log.startswith("$ rm ")
+        timings = json.loads((folder / "trials" / trial / "timings.json").read_text())
+        assert timings["post_build_seconds"] >= 0
+        assert (
+            json.loads((folder / "trials" / trial / "status.json").read_text())[
+                "post_build_failure"
+            ]
+            is None
+        )
+    assert "[warn]" not in out
+
+
+def test_post_build_runs_after_a_failed_pre_build_and_every_step_runs(experiment, fake, cli):
+    settings = experiment(
+        pre_build=["exit 7"], post_build=["echo one > ../one", "exit 5", "echo three > ../three"]
+    )
+    code, out, _ = cli("run", settings)
+    assert code == 1
+    trial = results_folder(settings) / "trials" / "alpha-1"
+    home = workspace_home(trial)
+    assert (home / "one").exists() and (home / "three").exists()
+    status = json.loads((trial / "status.json").read_text())
+    # The Trial failed for its own reason; the teardown's failure is kept beside it.
+    assert status["reason"] == "pre_build: `exit 7` exited with code 7"
+    assert status["post_build_failure"] == "post_build: `exit 5` exited with code 5"
+    assert "[warn]  alpha-1 post_build: `exit 5` exited with code 5" in out
+
+
+def test_a_failing_post_build_does_not_fail_a_finished_trial(experiment, fake, cli):
+    settings = experiment(post_build=["exit 5"])
+    code, out, _ = cli("run", settings)
+    assert code == 0, out
+    status = json.loads((results_folder(settings) / "trials/alpha-1/status.json").read_text())
+    assert status["status"] == "finished"
+    assert "[warn]  alpha-1 post_build: `exit 5` exited with code 5" in out
+
+
+def test_post_build_runs_after_a_trial_stopped_with_ctrl_c(experiment, fake, cli):
+    fake.set(mode="stubborn")
+    settings = experiment(post_build=["echo torn down > ../torn-down"])
+    press_ctrl_c(lambda: len(fake.calls()) == 1, times=2)
+    assert cli("run", settings)[0] == 130
+    trial = results_folder(settings) / "trials" / "alpha-1"
+    assert json.loads((trial / "status.json").read_text())["reason"] == STOPPED
+    assert (workspace_home(trial) / "torn-down").read_text() == "torn down\n"
+
+
 def test_a_crash_fails_one_trial_without_retry_or_stopping_others(experiment, fake, cli):
     fake.set(per_cwd={"/v1-2/": "crash"})
     settings = two_by_three(experiment, concurrency=3)
@@ -733,6 +799,23 @@ def test_the_checks_are_run_on_the_base_commit_before_any_trial(experiment, fake
     settings.write_text(settings.read_text().replace("effort: high", "effort: high\n  repeats: 2"))
     assert cli("run", settings, "--resume")[0] == 1
     assert runs.read_text() == "ran\n"
+
+
+def test_post_build_runs_in_the_base_commits_workspace(experiment, fake, cli, tmp_path):
+    marker = tmp_path / "base-torn-down"
+    settings = experiment(
+        pre_build=["touch started"],
+        checks="exit 3",
+        check_base="mark",
+        post_build=[f"test -f started && pwd >> {marker}"],
+    )
+    assert cli("run", settings)[0] == 0
+    base, trial = marker.read_text().splitlines()
+    assert base.endswith("/base/repo") and trial.endswith("/alpha-1/repo")
+    assert (
+        f"$ test -f started && pwd >> {marker}"
+        in (results_folder(settings) / "base-checks.log").read_text()
+    )
 
 
 def test_checks_that_fail_on_the_base_commit_stop_the_run(experiment, fake, cli):

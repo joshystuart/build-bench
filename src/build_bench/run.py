@@ -217,6 +217,8 @@ def run(
                 tell(f"[done]  {trial.id} finished in {_minutes(status['agent_seconds'])}")
             else:
                 tell(f"[fail]  {trial.id} {status['reason']}")
+            if status.get("post_build_failure"):
+                tell(f"[warn]  {trial.id} {status['post_build_failure']}")
 
     with display or nullcontext():
         in_parallel(one, todo, settings.concurrency, agent, tell)
@@ -291,6 +293,34 @@ def run_steps(name: str, steps: list[str], cwd: Path, out, env: dict | None = No
         if done.returncode != 0:
             return f"{name}: `{step}` exited with code {done.returncode}"
     return None
+
+
+def tear_down(settings: Settings, cwd: Path, log: Path) -> str | None:
+    """Run every `post_build` step in `cwd`, even after one fails, so each gets its
+    chance to stop what it owns. Writes them and their output to `log`; returns
+    why the first failed, or None when all passed (or there are none).
+
+    Each step runs in its own session, so the Ctrl+C that kills the agents at
+    once does not also cut a teardown short and leave its containers running."""
+    if not settings.post_build or not cwd.is_dir():
+        return None
+    first = None
+    with log.open("a") as out:
+        for step in settings.post_build:
+            out.write(f"$ {step}\n")
+            out.flush()
+            done = subprocess.run(
+                step,
+                shell=True,
+                cwd=cwd,
+                stdout=out,
+                stderr=out,
+                env=settings.environment(),
+                start_new_session=True,
+            )
+            if done.returncode != 0 and first is None:
+                first = f"post_build: `{step}` exited with code {done.returncode}"
+    return first
 
 
 def runtime_problem(settings: Settings, cwd: Path, out) -> str | None:
@@ -380,7 +410,10 @@ def check_base(settings: Settings, folder: Path, say=print) -> None:
                     out.write(f"$ {settings.checks_command}\n")
                 out.write(checks_output(settings, outputs))
     finally:
+        torn = tear_down(settings, repo, log)
         shutil.rmtree(home, ignore_errors=True)
+    if torn:
+        say(f"WARNING: {torn} in the base commit's workspace; see {log}")
     _redact_file(log, secrets(settings))
     write_json(
         folder / "base-checks.json", {**result, "base_sha": settings.base_sha, "settings_key": key}
@@ -458,6 +491,15 @@ def build_trial(
         status.update(_build(settings, folder, trial, agent))
     except Exception as error:  # noqa: BLE001 - any surprise fails this Trial only
         status.update(status="failed", reason=f"crashed: {type(error).__name__}: {error}")
+    # However the Trial ended, even when stopped: what pre_build started stops here.
+    started = time.time()
+    torn = tear_down(settings, trial.workspace, trial.folder / "post_build.log")
+    if settings.post_build and trial.workspace.is_dir():
+        timings = read_json(trial.folder / "timings.json") or {}
+        timings["post_build_seconds"] = time.time() - started
+        write_json(trial.folder / "timings.json", timings)
+    # It does not fail the Trial (the build is what it is), but it is kept and told.
+    status["post_build_failure"] = torn
     if status["status"] != "finished" and agent.stopped:
         # Whatever broke (a pre_build step or git also got the Ctrl+C), the
         # stop is why; the Trial runs again on resume.

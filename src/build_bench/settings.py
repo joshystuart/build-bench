@@ -106,6 +106,9 @@ class Settings(_Strict):
     plan: Path | None = None
     results: Path = Path(".bench/results")
     pre_build: list[str] = []
+    #: Commands run in each Trial's workspace once it ends, however it ended, and
+    #: in the base commit's after its checks: to stop what `pre_build` started.
+    post_build: list[str] = []
     #: One command, or a list of named Checks.
     checks: str | list[CheckCommand] | None = None
     #: Run the checks in each Trial's own workspace, put back afterwards, not in a copy.

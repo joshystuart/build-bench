@@ -25,6 +25,10 @@ and what is measured afterwards.
 - **Preparation:** `pre_build` steps run in the workspace first. Their time is
   not part of the Trial's time, and they use no tokens. A failing step fails
   the Trial before the agent starts.
+- **Cleanup:** `post_build` steps run in the workspace once the Trial ends,
+  however it ended, to stop what `pre_build` started (containers, say). A
+  failing step is warned about but does not fail the Trial. See
+  [settings.md](settings.md#cleaning-up-after-a-trial).
 - **Checks on the base commit:** before the first Trial, `run` makes sure
   `checks` passes on the base commit, and stops if it does not (or, with
   `check_base: mark`, builds anyway and has the report mark it). See
