@@ -15,6 +15,7 @@ Control keys (all optional):
     check_present yes | no | unsure: what a judge answers for every Defect
     check_in_base yes | no | unsure: whether every Defect present was in the base
     compare_better 1 | 2 | same: which build a judge prefers in every Comparison
+    insights_reply the text the insights writer replies with
     judge_mode    mode for judge runs
     merge_mode    mode for merge runs (default: judge_mode)
     check_mode    mode for defect-check runs (default: judge_mode)
@@ -163,6 +164,8 @@ def main() -> int:
             )
         elif kind == "compare":
             reply = replies.compare_reply(control.get("compare_better", "1"))
+        elif kind == "insights":
+            reply = control.get("insights_reply", replies.insights_reply(prompt))
         result = {
             "type": "result",
             "subtype": "success",

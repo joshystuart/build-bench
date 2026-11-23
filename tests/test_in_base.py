@@ -124,7 +124,7 @@ def test_a_defect_most_judges_place_in_the_base_is_set_apart(experiment, cli, no
         "| 4/4 · found 0, checked only 4 |" in table
     )
     assert "| D1 |" not in md.split("## Defects already in the base commit")[0]
-    assert "no Variant caused them" in table
+    assert "already had these, so they are left out of every count" in table
 
 
 def test_a_tie_or_only_unsure_answers_is_not_in_the_base(experiment, cli, no_models):  # noqa: F811

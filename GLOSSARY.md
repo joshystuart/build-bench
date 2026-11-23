@@ -55,6 +55,12 @@ One judge's answers, for one trial, to whether it has each defect and, when it
 does, how severe the defect is there and whether the base commit already had it.
 _Avoid_: Confirmation, verification, vote
 
+**Insights**:
+A model's reading of an Experiment's report, written for people who will not
+read the tables: a headline, a heading over each chart, the caveats and a
+recommendation. The charts and counts around it come from the report.
+_Avoid_: Summary (a Trial's final message), analysis, conclusions
+
 **Comparison**:
 One judge's choice between two trials of different variants: which it would
 rather ship, or that they are the same.

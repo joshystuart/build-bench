@@ -20,7 +20,10 @@ Mostly fine.
 
 
 def kind(prompt: str) -> str | None:
-    """Which step a prompt belongs to: find, merge, check or compare; None for a build."""
+    """Which step a prompt belongs to: find, merge, check, compare or insights; None
+    for a build."""
+    if '"headline"' in prompt:
+        return "insights"
     if '"better"' in prompt:
         return "compare"
     if '"answers"' in prompt:
@@ -55,3 +58,27 @@ def check_reply(prompt: str, present: str = "yes", in_base: str = "no") -> str:
 
 def compare_reply(better: str = "1") -> str:
     return fenced({"better": better, "reason": "Build 1 handles failures."})
+
+
+def insights_reply(prompt: str) -> str:
+    """Words for insights.html: the first Variant named in the prompt is the pick, and
+    every subagent named in it builds."""
+    variants = re.findall(r"^### (\S+)$", prompt, flags=re.M)
+    subagents = re.findall(r"^- (.+)$", prompt.split("## Subagents")[-1], flags=re.M)
+    defects = re.findall(r"^\| (D\d+) \|", prompt, flags=re.M)
+    return fenced(
+        {
+            "headline": "Same quality. *v1* costs less.",
+            "stats": [{"value": "+50%", "label": "cost of v2 over v1"}],
+            "pick": variants[0] if variants else None,
+            "pick_title": "The cheaper one",
+            "task": "Add mul",
+            "variants": {v: f"What {v} does" for v in variants},
+            "sections": {"quality": "No difference in *quality*", "cost": "v2 costs more"},
+            "defect_titles": {d: f"Plain {d}" for d in defects},
+            "roles": [{"name": "Explore", "subagents": subagents}] if subagents else [],
+            "caveats": [{"title": "Few runs.", "detail": "Read with care."}],
+            "why": ["Same quality"],
+            "next": ["Run more"],
+        }
+    )

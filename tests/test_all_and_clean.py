@@ -33,9 +33,11 @@ def model(monkeypatch):
         text = "\n".join(m["content"] for m in request["messages"])
         reply = {
             "find": replies.FOUND,
-            "merge": replies.merge_reply(text),
-            "check": replies.check_reply(text),
+            "merge": replies.merge_reply,
+            "check": replies.check_reply,
+            "insights": replies.insights_reply,
         }[replies.kind(text)]
+        reply = reply if isinstance(reply, str) else reply(text)
         return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=reply))])
 
     monkeypatch.setattr(litellm, "completion", completion)
@@ -55,10 +57,12 @@ def test_all_runs_judges_and_reports_into_one_folder(experiment, fake, cli, mode
             for step in ("verdicts", "defect-checks"):
                 assert json.loads((t / step / f"{judge}.json").read_text())["status"] == "ok"
     assert json.loads((folder / "defects.json").read_text())["judge"] == "api"
-    for name in ("report.json", "report.md", "report.html"):
+    for name in ("report.json", "report.md", "report.html", "insights.html"):
         assert (folder / name).is_file()
-    # Each Judge gives three Verdicts and three Defect checks; the first Judge also merges.
-    assert len(model) == 7
+    # Each Judge gives three Verdicts and three Defect checks; the first Judge also
+    # merges, then writes the insights.
+    assert len(model) == 8
+    assert replies.kind(str(model[-1]["messages"])) == "insights"
     assert len(fake.calls(judge=True)) == 6
 
 
@@ -68,7 +72,7 @@ def test_all_carries_on_past_a_failed_trial_and_exits_non_zero(experiment, fake,
     code, out, _ = cli("all", settings)
     assert code == 1
     folder = results_folder(settings)
-    assert len(model) == 5
+    assert len(model) == 6  # Two Verdicts, a merge, two Defect checks and the insights.
     assert not (folder / "trials/v1-2/verdicts").exists()
     md = (folder / "report.md").read_text()
     assert "## Failed Trials\n\n- v1-2: crashed: exit code 3" in md

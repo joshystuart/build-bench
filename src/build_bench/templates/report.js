@@ -1,4 +1,5 @@
-// Tooltips for the timeline rows and the theme button, inlined into report.html.
+// Tooltips for anything with a data-tip, and the theme button, inlined into
+// report.html and insights.html.
 
 (function () {
   var tip = document.getElementById('tip');
@@ -21,7 +22,7 @@
     tip.style.top = Math.max(8, top) + 'px';
   }
   function hide() { tip.hidden = true; }
-  document.querySelectorAll('.agent').forEach(function (el) {
+  document.querySelectorAll('[data-tip]').forEach(function (el) {
     el.addEventListener('pointerenter', function (e) { fill(el); place(e.clientX, e.clientY); });
     el.addEventListener('pointermove', function (e) { place(e.clientX, e.clientY); });
     el.addEventListener('pointerleave', hide);

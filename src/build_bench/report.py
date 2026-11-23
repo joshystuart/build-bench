@@ -751,7 +751,8 @@ def _difference_cell(found: dict | None) -> str:
     return f"{found['lower']} lower by {num(found['by'])}: {found['weight']}"
 
 
-def _categorised(data: dict) -> bool:
+def categorised(data: dict) -> bool:
+    """Whether any Defect has a category: Defects merged before categories have none."""
     return any(d["category"] != UNCATEGORISED for d in data["defects"] or [])
 
 
@@ -792,18 +793,15 @@ def tables(data: dict) -> list[Table]:
             "Build",
             labels + [label for _, label, _ in BUILD],
             _summary(variants, "build", BUILD),
-            "Built counts the Trials that finished with code changes. Each cell is the "
-            "average over finished Trials, with the lowest and highest in brackets: failed "
-            "Trials are left out, and Trials that changed nothing are counted, as they spent "
-            "the time and money. Active time is wall time "
-            f"less the waits of {IDLE_SECONDS / 60:g} minutes or more when the main agent sat "
-            "idle with no subagent running. Most subagents at once counts the subagents "
-            "running at one moment.",
+            "Averages per finished Trial, lowest–highest in brackets. Built: finished with "
+            f"code changes. Active time leaves out idle waits of {IDLE_SECONDS / 60:g} minutes "
+            "or more.",
         ),
         Table(
             "Output",
             labels + [label for _, label, _ in OUTPUT],
             _summary(variants, "output", OUTPUT),
+            "Averages per built Trial, lowest–highest in brackets.",
         ),
         Table(
             "Quality",
@@ -816,10 +814,8 @@ def tables(data: dict) -> list[Table]:
                 ]
                 for v in variants
             ],
-            "Checks passed counts every Trial, so one that failed to finish or changed "
-            "nothing counts against its Variant. The Output table and the Defect columns "
-            "count only built Trials. The Defect columns are the Defects one Trial has, on "
-            "average. Nits are what one Judge listed for one Trial, on average.",
+            "Checks passed is out of every Trial. Defects are per built Trial, and nits per "
+            "Judge and Trial, on average.",
         ),
     ]
     if len(data["check_names"]) > 1:
@@ -831,8 +827,7 @@ def tables(data: dict) -> list[Table]:
                     [r["trial"]] + [r["checks"].get(name, "–") for name in data["check_names"]]
                     for r in data["trials"]
                 ],
-                f"Each Check's result in each Trial. – means it was not run; {NO_CHANGES} that "
-                "the build changed nothing, so the result says nothing about it.",
+                "– means the Check was not run.",
             )
         )
     if any(any(d["measures"].values()) for d in data["differences"]):
@@ -850,17 +845,12 @@ def tables(data: dict) -> list[Table]:
                     ]
                     for d in data["differences"]
                 ],
-                "Each cell names the Variant with the lower average and by how much, then "
-                "how that stands against the spread between Trials of the same Variant. "
-                "Clear: dealing the Trials out to the two Variants at random gives a "
-                "difference this large less than 1 time in 20. Possible: less than 1 time "
-                "in 5. Within noise: more often than that, so do not read it as a real "
-                "difference. With 3 Trials each, nothing can come out clear; it takes 4. "
-                "Only behaviour Defects (and Defects from before categories) are weighed; "
-                "test gaps and scope Defects are counted in the next table.",
+                "Which Variant is lower, by how much, and whether that beats the spread "
+                "between Trials: clear (chance under 1 in 20), possible (under 1 in 5) or "
+                "within noise (not a difference). Clear needs 4 or more Trials each.",
             )
         )
-    categories = _categorised(data)
+    categories = categorised(data)
     if categories:
         found.append(
             Table(
@@ -871,30 +861,23 @@ def tables(data: dict) -> list[Table]:
                     + [cell(v["quality"]["categories"][c]) for c in CATEGORY_LABELS]
                     for v in variants
                 ],
-                "The Defects one Trial has, of each category, on average. Behaviour: the code "
-                "does the wrong thing. Test gaps: the code is right but its tests would miss a "
-                "regression. Scope: the build and the plan disagree about what to build. Only "
-                "behaviour Defects are weighed in the Differences table.",
+                "Per built Trial, on average. Behaviour: the code does the wrong thing. Test "
+                "gaps: its tests would miss a regression. Scope: the build and the plan "
+                "disagree.",
             )
         )
     caused = [d for d in data["defects"] or [] if not d["in_base"]]
     in_base = [d for d in data["defects"] or [] if d["in_base"]]
     differing = [d for d in caused if not d["in_every_trial"]]
     shared = [d for d in caused if d["in_every_trial"]]
-    severity = (
-        " A Defect is as severe as the Judges who found it in a Trial voted: the middle "
-        "of their votes."
-    )
     if differing:
         found.append(
             _defect_table(
                 "Defects",
                 differing,
                 variants,
-                "The Defects some Trials have and others do not. Each Variant's column is "
-                "the Trials that have the Defect, of the Trials checked for it. A Trial has "
-                "a Defect when more of its Judges say it does than say it does not; an even "
-                "split is disputed." + severity,
+                "Trials with the Defect, of those checked. Found: a Judge reported it "
+                "unprompted. Checked only: a Judge confirmed it when asked.",
                 categories,
             )
         )
@@ -904,9 +887,8 @@ def tables(data: dict) -> list[Table]:
                 "Defects in every Trial",
                 shared,
                 variants,
-                "Every Trial checked has these, so they say nothing about which Variant is "
-                "better. They usually point at a gap in the plan."
-                + ("" if differing else severity),
+                "Every Trial has these, so they do not tell the Variants apart. Usually a gap "
+                "in the plan.",
                 categories,
             )
         )
@@ -916,10 +898,7 @@ def tables(data: dict) -> list[Table]:
                 "Defects already in the base commit",
                 in_base,
                 variants,
-                "More of the Judges' answers say the base commit already had these than say "
-                "it did not, so no Variant caused them. They are left out of every Variant's "
-                "Defect counts and of the Differences table. Each Variant's column is the "
-                "Trials that have the Defect, of the Trials checked for it.",
+                "The base commit already had these, so they are left out of every count.",
                 categories,
             )
         )
@@ -935,10 +914,8 @@ def tables(data: dict) -> list[Table]:
                     + [str(c["same"]), _comparison_result(c)]
                     for c in data["comparisons"]
                 ],
-                "A Judge was shown two Trials, one of each Variant, without their names and "
-                "said which it would rather ship. A pair of Trials counts once, for the one "
-                "more of its Judges preferred. The result weighs the split against a coin "
-                "toss, in the same words as the Differences table.",
+                "A Judge saw two Trials without their names and picked the one it would "
+                "rather ship. The result weighs the split against a coin toss.",
             )
         )
     if data["agreement"]:
@@ -953,10 +930,8 @@ def tables(data: dict) -> list[Table]:
                     + [_severities(a["spread"])]
                     for a in data["agreement"]
                 ],
-                "The Findings each Judge reported in its own Verdict on the Trial, as "
-                "critical · major · minor. Spread is the most minus the fewest of each. A wide "
-                "spread means the Judges disagree about how bad the build is, so trust its "
-                "Defect counts less.",
+                "Findings per Judge, as critical · major · minor. A wide spread means trust "
+                "that Trial's Defect counts less.",
             )
         )
     if data["judges"]:
@@ -971,7 +946,7 @@ def tables(data: dict) -> list[Table]:
                     + [num(j["cost_usd"]), num(j["minutes"])]
                     for j in data["judges"]
                 ],
-                "Judging cost and time, kept apart from the build numbers.",
+                "What judging cost, apart from the builds.",
             )
         )
     return found
@@ -979,6 +954,8 @@ def tables(data: dict) -> list[Table]:
 
 #: What the link to diffs.html says.
 DIFFS = "The code each Trial produced, with the Judges' Findings pinned on it:"
+#: What the link to insights.html says.
+INSIGHTS = "A model's reading of these results, with charts:"
 #: How to try failed judging again, under the list of what failed.
 RETRY = "`build-bench judge` tries these again; it keeps every step that succeeded."
 
@@ -1072,8 +1049,10 @@ def flag_lines(data: dict) -> list[str]:
     return out
 
 
-def markdown(data: dict) -> str:
+def markdown(data: dict, insights: bool = False) -> str:
     out = [f"# {data['experiment']}", "", f"{DIFFS} [diffs.html](diffs.html)", ""]
+    if insights:
+        out += [f"{INSIGHTS} [insights.html](insights.html)", ""]
     out += flag_lines(data) + [""]
     for table in tables(data):
         out += [f"## {table.title}", ""]
@@ -1112,12 +1091,20 @@ def markdown(data: dict) -> str:
 
 
 def report(settings: Settings, folder: Path) -> list[Path]:
-    from .html_report import diffs_html, html
+    """Write the report, and insights.html when the saved insights were written
+    from these results."""
+    from .html_report import diffs_html, html, insights_html
+    from .insights import saved_words
     from .review import page_data
 
     data = build_report(settings, folder)
+    words = saved_words(settings, folder, data)
     write_json(folder / "report.json", data)
-    (folder / "report.md").write_text(markdown(data))
-    (folder / "report.html").write_text(html(data))
+    (folder / "report.md").write_text(markdown(data, insights=words is not None))
+    (folder / "report.html").write_text(html(data, insights=words is not None))
     (folder / "diffs.html").write_text(diffs_html(page_data(settings, folder)))
-    return [folder / name for name in ("report.json", "report.md", "report.html", "diffs.html")]
+    names = ["report.json", "report.md", "report.html", "diffs.html"]
+    if words is not None:
+        (folder / "insights.html").write_text(insights_html(settings, folder, data, words))
+        names.append("insights.html")
+    return [folder / name for name in names]

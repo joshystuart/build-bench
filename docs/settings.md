@@ -64,10 +64,23 @@ judges:
     compare: { max_pairs: 12 }  # optional; also compare pairs of Trials (off when left out)
 merge_judge: diff-only          # optional; the Judge that merges Findings (default: the first)
 judge_guidance: guidance.md     # optional; added to every judging prompt (see judging.md)
+insights:                       # optional; the model that writes insights.html (default: the merge Judge)
+  type: api                     # api (the default), claude or copilot
+  model: openrouter/anthropic/claude-opus-5-5
 ```
 
 A settings file with missing or wrong fields is rejected before anything
 runs, with every problem named.
+
+## The insights writer
+
+`insights` names the model that writes `insights.html` (see
+[report.md](report.md#the-story-insightshtml)). It takes a Judge's fields but
+`name`, `prompt` and `compare`: `type` (`api` when left out), `model`,
+`effort` (agents only), `api_key_env` (`api` only) and `limits`. Left out,
+the merge Judge writes it; with no Judges and no `insights`, there is no page.
+The writer is not judging, so the same model family as the builders is fine;
+pick one that writes plainly.
 
 ## Denied tools
 

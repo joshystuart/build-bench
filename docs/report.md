@@ -1,7 +1,10 @@
 # The report
 
 `report` writes `report.md`, `report.html`, `report.json` and `diffs.html` from
-the results folder alone. It starts no agent and calls no model.
+the results folder alone. It starts no agent and calls no model. `insights`
+asks a model to write up the results as one page, `insights.html` (see
+[below](#the-story-insightshtml)); `report` draws that page again from the
+saved words while the results stay the same.
 
 ## The tables
 
@@ -80,6 +83,48 @@ Checks tables, and is left out of the pass counts, since no build could pass
 it. `report.json` holds every number, per Trial and
 per Variant. `report.html` adds a timeline per Trial on one time scale, works
 offline, and has a "Show as table" alternative for every chart.
+
+## The story: insights.html
+
+`report.html` is every number; `insights.html` is the few that matter, for
+someone who will not read the tables. `build-bench insights` (and `all`, as
+its last step) shows a model the report, each Variant's prompt and skills, the
+plan, the subagents' names and a few ratios worked out for it (how much more
+one Variant costs than another, how much of its time the main agent waited).
+The model writes the words: a headline, up to three numbers that back it, a
+heading over each chart, each Defect's title in plain words, which subagents
+did what, up to four caveats, and which Variant to pick and why. It is told
+that a difference "within noise" is no difference.
+
+The page draws everything else from the report itself, so no number on it
+comes from the model except its headline stats:
+
+- **Inputs:** the model, the task, how many runs, the Judges, and a card per
+  Variant.
+- **Quality, cost and time:** a bar per Variant for its average, with a dot
+  for each of its Trials so the spread is in plain sight: behaviour Defects
+  per built Trial, cost and active minutes, the time split into the main
+  agent working and waiting on subagents. The recommended Variant is
+  highlighted. Beside them: Trials built, Trials that passed every Check,
+  and how many differences in quality stand clear of noise.
+- **Every run:** each Trial's agents on one time scale, grouped by Variant,
+  each subagent coloured by the role the model gave it. A stretch with
+  nothing running is cut to a short line, so the scale is active time.
+- **Shared defects:** the Defects every Trial has, and those already in the
+  base commit.
+- **Where builds differ:** a dot per Trial for every other Defect: whether it
+  has it, the Judges split, or it does not.
+- **Head to head:** with Comparisons, each pair of Variants' split.
+- **Caveats** and the **recommendation**.
+
+The model is `insights` in the settings (see
+[settings.md](settings.md#the-insights-writer)), else the merge Judge. Its
+reply is saved in `insights.json` (and `insights.reply.md`) with a hash of
+everything it was shown: `insights` asks again only when that changed or the
+model did, or with `--fresh`; `report` draws the page from the saved words
+only while they match the results, and otherwise says to run `insights`.
+A reply that names a Variant the results do not have, or has no headline,
+fails, and `insights` exits with code 1.
 
 ## The code: diffs.html
 
@@ -181,6 +226,7 @@ compare anything. Whatever separates them is noise.
   defects.json
   comparisons/<judge>/<trial>__<trial>.json
   report.json  report.md  report.html  diffs.html
+  insights.json  insights.reply.md  insights.html
 ```
 
 The Trial workspaces sit apart, in the folder `experiment.json` names under

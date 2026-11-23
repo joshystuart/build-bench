@@ -48,6 +48,14 @@ def _parser() -> argparse.ArgumentParser:
         "Defects, Defect checks and Comparisons",
     )
     add("report", "Write the comparison of the Variants.")
+    insights = add(
+        "insights", "Have a model write insights.html: the results' story, around charts."
+    )
+    insights.add_argument(
+        "--fresh",
+        action="store_true",
+        help="ask the model again even when the results have not changed",
+    )
     diff = commands.add_parser(
         "diff",
         help="Print a unified diff of one Trial's code against another's.",
@@ -61,7 +69,11 @@ def _parser() -> argparse.ArgumentParser:
         help="two Trial ids, such as fast-1 slow-2, and a file to compare only that",
     )
     diff.add_argument("--results", metavar="DIR", help="results folder (default: the latest one)")
-    add("all", "run, judge and report in series, into a new results folder.", results=False)
+    add(
+        "all",
+        "run, judge, report and insights in series, into a new results folder.",
+        results=False,
+    )
     clean = commands.add_parser(
         "clean",
         help="Delete the Trial workspaces of a results folder, keeping the results.",
@@ -109,13 +121,18 @@ class _Unusable(Exception):
     pass
 
 
-def _need_env(settings, *, judges: bool) -> None:
-    missing = settings_module.required_env(settings, judges=judges)
+def _need_env(settings, *, judges: bool, writer_only: bool = False) -> None:
+    """Check the logins a phase needs: the builders', and with `judges` every
+    Judge's and the insights writer's; or, with `writer_only`, the writer's alone."""
+    if writer_only:
+        missing = settings_module.writer_env(settings)
+    else:
+        missing = settings_module.required_env(settings, judges=judges)
     if missing:
         raise _Unusable("missing environment variable(s): " + ", ".join(missing))
-    if judges:
+    if judges or writer_only:
         try:
-            settings_module.log_in_judges(settings)
+            settings_module.log_in_judges(settings, [settings.writer] if writer_only else None)
         except Exception as error:  # noqa: BLE001 - whatever LiteLLM raises, nothing can start
             raise _Unusable(f"the GitHub Copilot login failed: {error}") from None
 
@@ -162,7 +179,27 @@ def _report(settings, args, folder: Path | None = None) -> int:
     written = report(settings, folder)
     for path in written:
         print(f"Wrote {path}")
+    if (folder / "insights.json").exists() and folder / "insights.html" not in written:
+        print(
+            "insights.html was not written: the results changed since its words were. "
+            "`build-bench insights` asks for them again."
+        )
     return OK
+
+
+def _insights(settings, args, folder: Path | None = None) -> int:
+    from .insights import insights
+
+    if settings.writer is None:
+        raise _Unusable("no model to write the insights: add `insights` or a Judge to the settings")
+    if folder is None:
+        # `all` checked every login before it built anything.
+        _need_env(settings, judges=False, writer_only=True)
+        folder = pick_folder(settings, args.results)
+        print(f"Results: {folder}")
+    ok = insights(settings, folder, fresh=getattr(args, "fresh", False))
+    _report(settings, args, folder)
+    return OK if ok else FAILED
 
 
 def _diff_words(parser: argparse.ArgumentParser, args) -> None:
@@ -194,10 +231,13 @@ def _all(settings, args) -> int:
     # missing key after hours of Trials.
     _need_env(settings, judges=True)
     folder = new_folder(settings)
-    built = _run(settings, args, folder)
-    judged = _judge(settings, args, folder)
-    _report(settings, args, folder)
-    return FAILED if built != OK or judged != OK else OK
+    done = [_run(settings, args, folder), _judge(settings, args, folder)]
+    # The insights step writes the report too, and the page from the report's numbers.
+    if settings.writer is None:
+        _report(settings, args, folder)
+    else:
+        done.append(_insights(settings, args, folder))
+    return OK if all(code == OK for code in done) else FAILED
 
 
 def _clean(settings, args) -> int:
@@ -222,6 +262,7 @@ COMMANDS = {
     "run": _run,
     "judge": _judge,
     "report": _report,
+    "insights": _insights,
     "diff": _diff,
     "all": _all,
     "clean": _clean,

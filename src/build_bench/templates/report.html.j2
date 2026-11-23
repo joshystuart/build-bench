@@ -24,6 +24,9 @@
 <button class='theme' id='theme' type='button'>Switch theme</button>
 <h1>{{ experiment }}</h1>
 <p>{{ diffs }} <a href='diffs.html'>diffs.html</a></p>
+{% if insights %}
+<p>{{ insights }} <a href='insights.html'>insights.html</a></p>
+{% endif %}
 <ul>
 {% for line in flags %}
 <li>{{ line }}</li>

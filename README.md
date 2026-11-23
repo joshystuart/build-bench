@@ -77,7 +77,9 @@ build-bench all
 ```
 
 This builds every Trial, judges them and writes the report. Open
-`.bench/results/opus-vs-sonnet/<start time>/report.html`.
+`.bench/results/opus-vs-sonnet/<start time>/insights.html` for the story in
+one page (a model's reading of the results, around charts of the real
+numbers), or `report.html` for every table.
 
 ## Choosing who builds
 
@@ -139,14 +141,15 @@ Each command takes a settings file; leave it out to use the nearest `.benchrc`.
 
 | Command | What it does |
 |---|---|
-| `build-bench all` | `run`, `judge` and `report`, one after the other. |
+| `build-bench all` | `run`, `judge`, `report` and `insights`, one after the other. |
 | `build-bench run` | Builds every Trial. `--resume` finishes the missing and failed ones. |
 | `build-bench judge` | Measures and judges the Trials. Skips what is already done, so you can add a Judge later; `--fresh` judges again from nothing. |
 | `build-bench report` | Writes the report again, and `diffs.html`: each Trial's code with the Judges' Findings pinned on it. Calls no model. |
+| `build-bench insights` | Has a model (the merge Judge, or `insights` in the settings) write `insights.html`: the results as one page of headlines and charts. Asks again only when the results changed; `--fresh` asks anyway. |
 | `build-bench diff A B [path]` | Prints a unified diff of Trial A's code against Trial B's, for every file or one. |
 | `build-bench clean` | Deletes the Trial workspaces and keeps the results. `--all` does it for every results folder, and deletes the workspaces of results folders you deleted by hand. |
 
-`judge`, `report`, `diff` and `clean` use the latest results unless you pass
+`judge`, `report`, `insights`, `diff` and `clean` use the latest results unless you pass
 `--results DIR`. Exit codes: `0` everything worked, `1` a Trial or a judging
 step failed (the rest is still saved and reported), `2` nothing could start.
 
