@@ -204,8 +204,9 @@ def test_the_settings_can_name_another_writer(saved, cli, writer, monkeypatch): 
     monkeypatch.delenv("MY_KEY", raising=False)
     code, _, err = cli("insights", settings)
     assert code == 2 and "MY_KEY" in err
-    # Only `insights` and `all` ask the writer, so `judge` does not need its key: it
-    # gets past the logins to the folder, which is not a results folder.
+    # Only `insights` and `all` ask the writer, so `judge` does not need its key: with
+    # the builders' login it gets past the logins to the folder, not a results folder.
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-test")
     code, _, err = cli("judge", settings, "--results", settings.parent)
     assert code == 2 and "not a results folder" in err and "MY_KEY" not in err
     monkeypatch.setenv("MY_KEY", "sk-mine")
