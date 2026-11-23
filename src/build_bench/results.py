@@ -12,6 +12,7 @@
     defects.json
     comparisons/<judge>/<trial>__<trial>.json
     report.json  report.md  report.html  diffs.html
+    insights.json  insights.reply.md  insights.html
 
 The Trial workspaces live apart, under the cache folder, so that nothing above
 them (a CLAUDE.md, node_modules, tool configs) belongs to the repository the

@@ -32,8 +32,11 @@ It must pass before a change is done. CI runs the same command.
 - `compare.py` — the fourth judging step, for a Judge with `compare` set: which
   of two Trials is better (Comparisons).
 - `report.py`, `html_report.py` — `report`, including how a difference between
-  Variants is weighed against the spread between Trials; the HTML pages' markup, styles and scripts
-  are in `templates/` (Jinja, autoescaped).
+  Variants is weighed against the spread between Trials, and every chart on
+  `insights.html`; the HTML pages' markup, styles and scripts are in
+  `templates/` (Jinja, autoescaped).
+- `insights.py` — `insights`: what the model that writes `insights.html` is
+  shown, and checking and saving its words.
 - `review.py` — `diffs.html`'s data (each Trial's diff of each file, with the
   Findings and Defect checks pinned by their `where`) and the `diff` command,
   all from the saved `diff-full.patch` and `diff.patch`.
@@ -52,7 +55,8 @@ No test calls a real model.
   `tests/fixtures/transcripts/copilot/`: a real Copilot CLI run with one
   subagent (Copilot's own instructions, request ids and streamed fragments
   removed).
-- API Judges are tested with `litellm.completion` replaced by a stub.
+- API Judges and the insights writer are tested with `litellm.completion`
+  replaced by a stub.
 - `tests/replies.py` works out what a stand-in Judge replies from the prompt
   it was sent; the fake `claude` and the stub both use it.
 - `tests/fixtures/transcripts/subagents/` is a real Claude Code transcript

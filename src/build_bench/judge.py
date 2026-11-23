@@ -893,19 +893,12 @@ def finding_key(trial: str, judge: str, finding: dict) -> str:
     return f"{trial}/{judge}/{_sha(text)}"
 
 
-def merge_judge(settings: Settings) -> Judge | None:
-    if not settings.judges:
-        return None
-    named = [j for j in settings.judges if j.name == settings.merge_judge]
-    return named[0] if named else settings.judges[0]
-
-
 def merge(
     settings: Settings, folder: Path, trials: list[Trial], board: Board, agent: Agents
 ) -> bool:
     """Place every Finding not yet in a Defect: into a Defect that already
     exists, which keeps its id, or into a new one."""
-    j = merge_judge(settings)
+    j = settings.merger
     if j is None:
         board.step("merge", [], "no Judges in the settings")
         return True

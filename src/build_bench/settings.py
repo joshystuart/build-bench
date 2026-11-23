@@ -99,6 +99,20 @@ class Judge(_Strict):
     compare: Compare | None = None
 
 
+class Writer(_Strict):
+    """The model that writes insights.html's words: one call, or an agent."""
+
+    type: Literal["claude", "copilot", "api"] = "api"
+    model: str
+    effort: Literal["low", "medium", "high", "xhigh", "max"] | None = None
+    api_key_env: str | None = None
+    limits: Limits | None = None
+
+    def as_judge(self) -> Judge:
+        """The same model as a Judge named `insights`, so it is asked as Judges are."""
+        return Judge(name="insights", **self.model_dump())
+
+
 class Settings(_Strict):
     name: str = Field(pattern=NAME_PATTERN)
     repo: Path
@@ -145,6 +159,8 @@ class Settings(_Strict):
     merge_judge: str | None = None
     #: A file whose text is added to every judging prompt, under its own heading.
     judge_guidance: Path | None = None
+    #: The model that writes insights.html; the merge Judge when left out.
+    insights: Writer | None = None
 
     # Filled in by load(), never read from the file.
     path: Path | None = Field(default=None, exclude=True)
@@ -191,6 +207,17 @@ class Settings(_Strict):
         if judges:
             used += [j.type for j in self.judges if j.type != "api"]
         return list(dict.fromkeys(used))
+
+    @property
+    def merger(self) -> Judge | None:
+        """The Judge that merges Findings into Defects: `merge_judge`, else the first."""
+        named = [j for j in self.judges if j.name == self.merge_judge]
+        return named[0] if named else next(iter(self.judges), None)
+
+    @property
+    def writer(self) -> Judge | None:
+        """The model that writes insights.html: `insights`, else the merge Judge."""
+        return self.insights.as_judge() if self.insights is not None else self.merger
 
     def version_pin(self, agent: str) -> str | None:
         return self.claude_version if agent == "claude" else self.copilot_version
@@ -339,6 +366,8 @@ def _check(s: Settings) -> list[str]:
 
     uses_claude = [f"variants.{i}" for i, v in enumerate(s.variants) if v.agent == "claude"]
     uses_claude += [f"judges.{i}" for i, j in enumerate(s.judges) if j.type == "claude"]
+    if s.insights is not None and s.insights.type == "claude":
+        uses_claude.append("insights")
     if s.auth is None and uses_claude:
         problems.append(f"auth: required, because {uses_claude[0]} is Claude Code")
 
@@ -356,6 +385,11 @@ def _check(s: Settings) -> list[str]:
             problems.append(f"judges.{i}.api_key_env: only for api judges")
         if judge.type == "api" and judge.effort:
             problems.append(f"judges.{i}.effort: only for claude and copilot judges")
+    if s.insights is not None:
+        if s.insights.type != "api" and s.insights.api_key_env:
+            problems.append("insights.api_key_env: only for type api")
+        if s.insights.type == "api" and s.insights.effort:
+            problems.append("insights.effort: only for types claude and copilot")
 
     check_names = [c.name for c in s.named_checks]
     for name in sorted({n for n in check_names if check_names.count(n) > 1}):
@@ -441,6 +475,14 @@ def required_env(s: Settings, *, judges: bool) -> list[str]:
     return [n for n in dict.fromkeys(needed) if not os.environ.get(n)]
 
 
+def writer_env(s: Settings) -> list[str]:
+    """Names of the environment variables the insights writer needs that are not set."""
+    writer = s.writer
+    assert writer is not None
+    needed = judge_env(writer) + ([s.auth_variable] if writer.type == "claude" else [])
+    return [n for n in dict.fromkeys(needed) if not os.environ.get(n)]
+
+
 #: Models reached through a GitHub Copilot subscription. LiteLLM logs in to these
 #: itself, with a code to enter at github.com, and keeps the login in its own folder.
 COPILOT = "github_copilot/"
@@ -461,10 +503,11 @@ def judge_env(judge: Judge) -> list[str]:
     return list(found.get("missing_keys") or [])
 
 
-def log_in_judges(s: Settings) -> None:
-    """Log in every Judge that logs in by itself, while someone is at the terminal:
-    a GitHub Copilot Judge with no saved login prints a code to enter at github.com."""
-    if any(j.type == "api" and j.model.startswith(COPILOT) for j in s.judges):
+def log_in_judges(judges: list[Judge]) -> None:
+    """Log in each of these Judges (or the insights writer) that logs in by itself,
+    while someone is at the terminal: a GitHub Copilot model with no saved login
+    prints a code to enter at github.com."""
+    if any(j.type == "api" and j.model.startswith(COPILOT) for j in judges):
         from litellm.llms.github_copilot.authenticator import Authenticator
 
         Authenticator().get_access_token()

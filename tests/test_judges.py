@@ -73,6 +73,8 @@ class Stub:
                 reply = replies.check_reply(text, self.present, self.in_base)
             elif kind == "compare":
                 reply = replies.compare_reply(self.better)
+            elif kind == "insights":
+                reply = replies.insights_reply(text)
             else:
                 reply = self.reply(number) if callable(self.reply) else self.reply
             return SimpleNamespace(

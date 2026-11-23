@@ -1,0 +1,266 @@
+{#- insights.html: rendered by html_report.py with autoescape on. The writer's words are
+    escaped, then its *emphasis* is made <em>; every number comes from report.json. -#}
+{% macro bars(rows, aria, striped=false) %}
+<div class='chart' role='list' aria-label='{{ aria }}'>
+{% for r in rows %}
+<div class='row{{ " pick" if r.pick }}' role='listitem' tabindex='0' data-tip='{{ r.tip|join("\n") }}'
+ aria-label='{{ r.tip|join(", ") }}'>
+<span class='name'>{{ r.name }}</span>
+<span class='track'>
+{% if striped %}
+<span class='fill work' style='width: {{ (r.width - r.waiting)|px }}%'></span>
+{% if r.waiting %}<span class='fill wait' style='width: {{ r.waiting|px }}%'></span>{% endif %}
+{% else %}
+<span class='fill' style='width: {{ r.width|px }}%'></span>
+{% endif %}
+{% for d in r.dots %}<span class='dot' style='left: {{ d|px }}%'></span>{% endfor %}
+</span>
+<span class='val'>{{ r.label }}</span>
+</div>
+{% endfor %}
+</div>
+{% endmacro %}
+{% macro stat_tiles(items) %}
+<div class='stats'>
+{% for value, label in items %}
+<div class='stat'><b>{{ value }}</b><span>{{ label }}</span></div>
+{% endfor %}
+</div>
+{% endmacro %}
+{% macro defect_list(rows) %}
+<ul class='defects'>
+{% for d in rows %}
+<li><span class='sev {{ d.severity }}'>{{ d.severity }}</span><span>{{ d.title }}</span></li>
+{% endfor %}
+</ul>
+{% endmacro %}
+<!doctype html>
+<html lang='en'>
+<head>
+<meta charset='utf-8'>
+<meta name='viewport' content='width=device-width, initial-scale=1'>
+<title>{{ experiment }} insights</title>
+<style>
+{{ css }}</style>
+</head>
+<body class='insights'>
+<div class='wrap'>
+<nav class='top'>
+<a href='report.html'>Full results</a>
+<a href='diffs.html'>The code</a>
+<button class='theme' id='theme' type='button'>Switch theme</button>
+</nav>
+
+<section class='hero'>
+<p class='eyebrow'>{{ eyebrow }}</p>
+<h1>{{ headline }}</h1>
+{% if stats %}
+<div class='stats'>
+{% for s in stats %}
+<div class='stat'><b>{{ s.value }}</b><span>{{ s.label }}</span></div>
+{% endfor %}
+</div>
+{% endif %}
+{% if pick %}<p class='pick-pill'>Pick: {{ pick_title }}</p>{% endif %}
+</section>
+
+<section>
+<p class='eyebrow'>Inputs</p>
+<h2>{{ heading.inputs }}</h2>
+<dl class='inputs'>
+{% for label, value in facts %}
+<div class='kv'><dt>{{ label }}</dt><dd>{{ value }}</dd></div>
+{% endfor %}
+</dl>
+<div class='setup'>
+{% for name, words, meta in cards %}
+<div class='var{{ " pick" if name == pick }}'>
+<span class='v'>{{ name }}</span>
+{% if words %}<span>{{ words }}</span>{% endif %}
+{% if meta %}<small>{{ meta }}</small>{% endif %}
+</div>
+{% endfor %}
+</div>
+</section>
+
+<section>
+<p class='eyebrow'>Quality</p>
+<h2>{{ heading.quality }}</h2>
+{% if quality %}
+<p class='note'>{{ "Behaviour defects" if behaviour else "Defects" }} per build, on average. Lower is
+better. Each dot is one build.</p>
+{{ bars(quality, "Defects per build") }}
+{% elif merge_failed %}
+<p class='note'>No defect counts: merging the Judges' findings failed. <code>build-bench judge</code> tries again.</p>
+{% elif not judged %}
+<p class='note'>No defect counts yet: the builds have not been judged.</p>
+{% endif %}
+{{ stat_tiles(quality_stats) }}
+</section>
+
+{% if cost %}
+<section>
+<p class='eyebrow'>Cost</p>
+<h2>{{ heading.cost }}</h2>
+<p class='note'>Cost per build in US dollars, on average. Each dot is one build.</p>
+{{ bars(cost, "Cost per build") }}
+</section>
+{% endif %}
+
+{% if time %}
+<section>
+<p class='eyebrow'>Time</p>
+<h2>{{ heading.time }}</h2>
+<p class='note'>Active minutes per build, on average. Each dot is one build.{% if waiting %} Solid:
+the main agent working. Striped: the main agent waiting on subagents.{% endif %}</p>
+{% if waiting %}
+<ul class='legend' aria-label='Legend'>
+<li><span class='sw work'></span>Main agent working</li>
+<li><span class='sw wait'></span>Waiting on subagents</li>
+</ul>
+{% endif %}
+{{ bars(time, "Active minutes per build", striped=true) }}
+{% if waiting %}
+<div class='stats'>
+{% for share, name in waiting %}
+<div class='stat'><b>{{ share }}</b><span>of {{ name }}'s time spent waiting</span></div>
+{% endfor %}
+</div>
+{% endif %}
+</section>
+{% endif %}
+
+{% if groups %}
+<section>
+<p class='eyebrow'>Every run</p>
+<h2>{{ heading.runs }}</h2>
+<p class='note'>Every run on one {{ minutes }}-minute scale of active time. Top bar: the main
+agent, faded while it waits on subagents{% if idle %}; a short thin line where it sat idle with
+nothing running, cut short{% endif %}. Rows below: its subagents. Hover a bar for its name.</p>
+<ul class='legend' aria-label='Legend'>
+<li><span class='sw main'></span>Main agent</li>
+{% if idle %}<li><span class='sw idle'></span>Idle</li>{% endif %}
+{% for kind, name in roles %}
+<li><span class='sw {{ kind }}'></span>{{ name }}</li>
+{% endfor %}
+{% if other %}<li><span class='sw other'></span>Other subagents</li>{% endif %}
+</ul>
+{% for g in groups %}
+<div class='group'>
+<div class='group-head'><span class='v{{ " pick" if g.pick }}'>{{ g.variant }}</span><small>{{ g.summary }}</small></div>
+{% for run in g.runs %}
+<div class='run'>
+<div class='rn'><b>{{ run.label }}</b>{% for line in run.meta %}<span>{{ line }}</span>{% endfor %}</div>
+<svg viewBox='0 0 1000 {{ run.height }}' role='img' aria-label='{{ run.aria }}'
+ style='aspect-ratio: 1000 / {{ run.height }}'>
+{% for x in run.grid %}<line class='grid' x1='{{ x|px }}' x2='{{ x|px }}' y1='0' y2='{{ run.height }}'/>{% endfor %}
+{% for s in run.spans %}
+<rect class='span {{ s.kind }}' x='{{ s.x|px }}' y='{{ s.y }}' width='{{ s.w|px }}' height='{{ s.h }}' rx='{{ 3 if s.h > 4 else 0 }}' data-tip='{{ s.tip }}'/>
+{% endfor %}
+</svg>
+</div>
+{% endfor %}
+<div class='axis' aria-hidden='true'><span></span><div>
+{% for at, label in axis %}<span style='left: {{ at|px }}%'>{{ label }}</span>{% endfor %}
+</div></div>
+</div>
+{% endfor %}
+</section>
+{% endif %}
+
+{% if shared or in_base %}
+<section>
+<p class='eyebrow'>Shared defects</p>
+<h2>{{ heading.shared }}</h2>
+<div class='stats'>
+{% if shared %}<div class='stat'><b>{{ shared|length }}</b><span>defect{{ "s" if shared|length != 1 }} in every build, whatever the Variant</span></div>{% endif %}
+{% if in_base %}<div class='stat'><b>{{ in_base|length }}</b><span>defect{{ "s" if in_base|length != 1 }} already in the starting code</span></div>{% endif %}
+</div>
+{% if shared %}
+<h3>In every build</h3>
+{{ defect_list(shared) }}
+{% endif %}
+{% if in_base %}
+<h3>Already in the starting code</h3>
+{{ defect_list(in_base) }}
+{% endif %}
+</section>
+{% endif %}
+
+{% if differing %}
+<section>
+<p class='eyebrow'>Where builds differ</p>
+<h2>{{ heading.differing }}</h2>
+<p class='note'>One dot per build. Filled: the build has the defect. Half: the Judges split.
+Hollow: it does not.</p>
+<div class='matrix-scroll'>
+<table class='matrix'>
+<thead><tr><th scope='col'>Defect</th>{% for v in variants %}<th scope='col'{{ " class='pick'"|safe if v == pick }}>{{ v }}</th>{% endfor %}</tr></thead>
+<tbody>
+{% for d in differing %}
+<tr><th scope='row'><span class='sev {{ d.severity }}'>{{ d.severity }}</span>{{ d.title }}</th>
+{% for cell in d.cells %}
+<td aria-label='{{ variants[loop.index0] }}: {{ cell|select("equalto", "present")|list|length }} of {{ cell|length }} builds'>
+{% for standing in cell %}<span class='mark {{ standing }}' title='{{ standing }}'></span>{% endfor %}
+</td>
+{% endfor %}
+</tr>
+{% endfor %}
+</tbody>
+</table>
+</div>
+</section>
+{% endif %}
+
+{% if splits %}
+<section>
+<p class='eyebrow'>Head to head</p>
+<h2>{{ heading.comparisons }}</h2>
+<p class='note'>A Judge saw two builds without their names and said which it would rather ship.</p>
+{% for c in splits %}
+<div class='split' role='img' aria-label='{{ c.first }} preferred {{ c.wins[0] }}, {{ c.second }} preferred {{ c.wins[1] }}, the same {{ c.same }}, of {{ c.compared }} pairs'>
+<div class='split-head'><span>{{ c.first }} <b>{{ c.wins[0] }}</b></span><small>{{ c.same }} the same · {{ c.weight or "even" }}</small><span><b>{{ c.wins[1] }}</b> {{ c.second }}</span></div>
+<div class='split-bar'><span class='a' style='width: {{ c.widths[0]|px }}%'></span><span class='same' style='width: {{ c.widths[1]|px }}%'></span><span class='b' style='width: {{ c.widths[2]|px }}%'></span></div>
+</div>
+{% endfor %}
+</section>
+{% endif %}
+
+{% if caveats %}
+<section>
+<p class='eyebrow'>Caveats</p>
+<h2>Read with care</h2>
+<ul class='big'>
+{% for c in caveats %}
+<li>{% if c.title %}<strong>{{ c.title }}</strong> {% endif %}{{ c.detail }}</li>
+{% endfor %}
+</ul>
+</section>
+{% endif %}
+
+{% if pick or why or next %}
+<section class='hero'>
+<p class='eyebrow'>Recommendation</p>
+<h2>{{ pick_title if pick else "No clear pick" }}</h2>
+<div class='cols'>
+{% if why %}
+<div><h3>Why</h3><ul class='big'>{% for line in why %}<li>{{ line }}</li>{% endfor %}</ul></div>
+{% endif %}
+{% if next %}
+<div><h3>Next</h3><ul class='big'>{% for line in next %}<li>{{ line }}</li>{% endfor %}</ul></div>
+{% endif %}
+</div>
+</section>
+{% endif %}
+
+<footer>
+<p>The words are {{ writer or "a model" }}'s reading of the
+results{{ " (${:.2f})".format(cost_usd) if cost_usd is not none }}. Every chart and count comes straight from them:
+the tables are in <a href='report.html'>report.html</a>, the code in <a href='diffs.html'>diffs.html</a>.</p>
+</footer>
+</div>
+<div id='tip' role='tooltip' hidden></div>
+<script>
+{{ script }}</script>
+</body>
+</html>
