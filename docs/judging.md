@@ -234,7 +234,9 @@ saved.
 
 A reply that is missing a severity, or names one that does not exist, is
 recorded as a failed Verdict with the reason, and `judge` runs it again next
-time. The same goes for a Defect check and a Comparison. A Verdict is also
+time. The same goes for a Defect check and a Comparison. A reply with no JSON
+object holding the expected key is asked for once more straight away, and
+fails only if the second reply has none either; the record's cost covers both. A Verdict is also
 given again when its Judge's prompt has changed, so one Experiment never mixes
 Verdicts from two prompts; Defect checks and Comparisons are redone when
 build-bench's own prompt for them changes. The shipped prompts are in

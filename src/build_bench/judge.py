@@ -354,6 +354,10 @@ class VerdictError(Exception):
     """A Judge's reply cannot be used."""
 
 
+class NoJSON(VerdictError):
+    """A Judge's reply holds no JSON object to read; asking again usually gets one."""
+
+
 class JudgeFailed(Exception):
     pass
 
@@ -412,7 +416,7 @@ def reply_json(reply: str, key: str) -> dict:
             continue
         if isinstance(value, dict) and key in value:
             return value
-    raise VerdictError(f"the reply holds no JSON object with {key}")
+    raise NoJSON(f"the reply holds no JSON object with {key}")
 
 
 def facts(trial: Trial) -> str:
@@ -712,16 +716,24 @@ def _blind_history(repo: Path, base: str) -> None:
 
 def _attempt(record: dict, target: Path, ask, parse) -> dict:
     """Ask, parse the reply into `record` and save it at `target`, whatever happens.
-    Cost and time are added to what `record` already holds."""
+    A reply with no JSON object in it is asked for once more. Cost and time are
+    added to what `record` already holds."""
     started = time.time()
     spent, seconds = record.get("cost_usd"), record.get("seconds") or 0.0
     record.update(status="failed", reason=None)
     try:
-        reply, cost = ask()
-        if cost is not None:
-            record["cost_usd"] = (spent or 0.0) + cost
-        target.with_suffix(".reply.md").write_text(reply)
-        record.update(parse(reply), status="ok")
+        for tries_left in (1, 0):
+            reply, cost = ask()
+            if cost is not None:
+                spent = (spent or 0.0) + cost
+                record["cost_usd"] = spent
+            target.with_suffix(".reply.md").write_text(reply)
+            try:
+                record.update(parse(reply), status="ok")
+                break
+            except NoJSON:
+                if not tries_left:
+                    raise
     except (VerdictError, JudgeFailed, TimeoutError) as error:
         record["reason"] = str(error) or type(error).__name__
     except Exception as error:  # noqa: BLE001 - a broken call fails this step only
