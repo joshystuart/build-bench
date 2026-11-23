@@ -235,6 +235,28 @@ def test_a_bad_reply_is_a_failed_verdict(experiment, fake, cli, stub, reply, rea
     assert "[verdict failed] secretvariant-1 by diff-only" in out
 
 
+def test_a_reply_with_no_json_is_asked_for_once_more(experiment, fake, cli, stub):
+    stub.reply = lambda number: "I liked it." if number in (1, 2) else GOOD
+    variants = [dict(VARIANTS[0], repeats=1)]
+    settings = experiment(variants=variants, judges=[api_judge()])
+    assert cli("run", settings)[0] == 0
+    assert cli("judge", settings)[0] == 1
+    # The first reply had no JSON, so the Judge was asked again, once.
+    assert len(stub.sent("find")) == 2
+    found = verdict(settings, "secretvariant-1", "diff-only")
+    assert found["status"] == "failed"
+    assert found["reason"] == "the reply holds no JSON object with findings"
+    assert found["cost_usd"] == pytest.approx(0.0084)
+
+    stub.requests.clear()
+    stub.reply = lambda number: "I liked it." if number == 1 else GOOD
+    assert cli("judge", settings)[0] == 0
+    assert len(stub.sent("find")) == 2
+    found = verdict(settings, "secretvariant-1", "diff-only")
+    assert found["status"] == "ok"
+    assert found["cost_usd"] == pytest.approx(0.0084)
+
+
 def test_a_judges_own_limits_win_and_a_hang_fails_the_verdict(experiment, fake, cli, stub):
     stub.sleep = 3
     settings = built(
