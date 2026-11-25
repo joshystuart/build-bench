@@ -52,7 +52,9 @@ those files.
   base commit, since commit messages can name the model. It can open files,
   run the checks and write a test to reproduce a problem. `copy_setup` runs in
   the copy before the Judge starts (see
-  [settings.md](settings.md#where-the-checks-run)). When the workspace is
+  [settings.md](settings.md#where-the-checks-run)), and `post_judge` once it
+  ends, however it ended (see
+  [settings.md](settings.md#cleaning-up-after-judging)). When the workspace is
   not there (after `clean`, or when the results folder was copied from another
   machine), it gets the base commit with the Trial's saved diff applied
   instead, which leaves out files git ignores. That needs `repo` to hold the

@@ -129,6 +129,10 @@ class Settings(_Strict):
     checks_in_place: bool = False
     #: Commands run in every throwaway copy of a Trial before it is used.
     copy_setup: list[str] = []
+    #: Commands run in every folder `judge` ran commands in (each copy, and the
+    #: workspace with `checks_in_place`) once that step ends, however it ended:
+    #: to stop what `copy_setup`, the checks or an Agent Judge started.
+    post_judge: list[str] = []
     #: Variables for every process the Experiment's commands start; `$NAME` and
     #: `${NAME}` expand from build-bench's own environment when the settings load.
     env: dict[str, str] = {}

@@ -20,6 +20,7 @@ runtime_check: node --version | grep -q '^v24\.'   # optional; must pass before 
 checks: npm run check           # optional; run by `judge` in a copy of each Trial; or a list of named Checks
 checks_in_place: false          # optional; run the checks in each Trial's own workspace instead
 copy_setup: [mise trust]        # optional; run in every throwaway copy of a Trial before it is used
+post_judge: [docker compose down -v]   # optional; run in every folder `judge` used once it is done with it
 check_base: true                # optional; true (the default), mark or false: see below
 concurrency: 2                  # Trials (and Judges) at once
 auth: api-key                   # or: subscription; Claude Code's login, needed only if it is used
@@ -125,8 +126,8 @@ Check's output, cut to its end.
 Every process build-bench starts for an Experiment inherits the shell it was
 started from, so a build can run on a different Node or Python than the base
 commit pins. `env` sets variables for all of them: `runtime_check`,
-`pre_build`, `post_build`, `copy_setup`, the checks, the building agents, and Agent Judges
-in every judging step. Its `PATH` also decides which `claude` or `copilot` is
+`pre_build`, `post_build`, `copy_setup`, `post_judge`, the checks, the building agents,
+and Agent Judges in every judging step. Its `PATH` also decides which `claude` or `copilot` is
 found and whose version is checked. build-bench's own `git` calls do not use
 it.
 
@@ -179,7 +180,9 @@ Two settings deal with this:
   before it is used: the checks copy, and each Agent Judge's copy for the
   find, check and compare steps. They do not run in the Trial's own workspace
   or in the merge step's empty folder. Each is told the path of the Trial's
-  own workspace in `BUILD_BENCH_WORKSPACE`. If one fails in the checks copy,
+  own workspace in `BUILD_BENCH_WORKSPACE`, and a name for the copy in
+  `BUILD_BENCH_COPY` (`trial-3fa9c1`, say) that no other copy in use at the
+  same time has. If one fails in the checks copy,
   the checks are recorded as not run, with the reason. If one fails in a
   Judge's copy, that judging step fails with the reason and no agent starts;
   the next `judge` tries it again. Its output is in `checks.log`, or beside
@@ -195,13 +198,15 @@ checks_in_place: true
 ```
 
 ```yaml
-# Give each copy its own Compose project, named after the Trial's workspace.
+# Give each copy its own Compose project, so copies in use at once never share one.
 copy_setup:
-  - echo "COMPOSE_PROJECT_NAME=$(basename "$(dirname "$BUILD_BENCH_WORKSPACE")")-copy" > .env
+  - echo "COMPOSE_PROJECT_NAME=$BUILD_BENCH_COPY" > .env
 ```
 
 Neither setting undoes what the checks change outside the folder: rows written
 to a database the Trial started, containers, files elsewhere on the machine.
+`post_judge` can stop what they started; see
+[Cleaning up after judging](#cleaning-up-after-judging).
 
 ## Cleaning up after a Trial
 
@@ -228,9 +233,50 @@ post_build: [docker compose down -v --remove-orphans]
   output is in `base-checks.log`).
 - It runs before `judge`, so checks that need what `pre_build` started must
   start it again: in `copy_setup`, or in the checks themselves with
-  `checks_in_place: true`.
+  `checks_in_place: true`. `post_judge` stops it once `judge` is done.
 - A run killed outright (not stopped with Ctrl+C) skips it; clean up by hand
   before `run --resume` or `clean`.
+
+## Cleaning up after judging
+
+`post_judge` is a list of commands run in every folder `judge` ran commands in,
+once it is done with that folder: the checks' throwaway copy (or the Trial's
+own workspace with `checks_in_place: true`), and each Agent Judge's copy in
+the find, check and compare steps. Use it to stop what `copy_setup`, the
+checks or an Agent Judge started outside the folder, such as containers, so
+Judges running at once or one after another do not pile them up. It does not
+run for API Judges or in the merge step's empty folder, where nothing runs.
+
+```yaml
+copy_setup:
+  - echo "COMPOSE_PROJECT_NAME=$BUILD_BENCH_COPY" > .env
+  - docker compose up -d --wait
+checks: npm test
+post_judge: [docker compose down -v --remove-orphans]
+```
+
+- It runs however the step ended: after the checks or the Judge, after a
+  failed `copy_setup`, after a Judge that failed or ran out of time, and after
+  Ctrl+C stops `judge`. It runs in the copy before the copy is removed, so
+  the files `docker compose down` reads are still there.
+- It is told the same `BUILD_BENCH_WORKSPACE` and `BUILD_BENCH_COPY` as
+  `copy_setup`. In the Trial's own workspace (`checks_in_place: true`) there
+  is no copy, so `BUILD_BENCH_COPY` is not set.
+- Every step runs, even after one fails, so each gets its chance to clean up.
+  Write them so they succeed when there is nothing to stop.
+- A failing step does not change a result: the checks, Verdict, Defect check
+  or Comparison still counts, and `judge`'s exit code is not changed. `judge`
+  prints a `[warn]` line, and the first failure is kept as
+  `post_judge_failure`, under `checks` in `measurements.json` or in the
+  Judge's saved record.
+- Its output is in `checks.log` for the checks, and beside the Judge's own
+  output for a Judge: `verdicts/<judge>.post_judge.log`,
+  `defect-checks/<judge>.post_judge.log`, and
+  `comparisons/<judge>/<trial>__<trial>.build-<n>.post_judge.log`, one per build.
+- Changing it does not make the checks run again: it cleans up and changes
+  no result.
+- A `judge` killed outright (not stopped with Ctrl+C) skips it; clean up by
+  hand.
 
 ## Checks on the base commit
 
