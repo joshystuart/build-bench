@@ -295,18 +295,20 @@ def run_steps(name: str, steps: list[str], cwd: Path, out, env: dict | None = No
     return None
 
 
-def tear_down(settings: Settings, cwd: Path, log: Path) -> str | None:
-    """Run every `post_build` step in `cwd`, even after one fails, so each gets its
+def tear_down(name: str, steps: list[str], cwd: Path, log: Path, env: dict) -> str | None:
+    """Run every teardown step in `cwd`, even after one fails, so each gets its
     chance to stop what it owns. Writes them and their output to `log`; returns
-    why the first failed, or None when all passed (or there are none).
+    why the first failed, naming the setting `name`, or None when all passed (or
+    there are none).
 
     Each step runs in its own session, so the Ctrl+C that kills the agents at
     once does not also cut a teardown short and leave its containers running."""
-    if not settings.post_build or not cwd.is_dir():
+    if not steps or not cwd.is_dir():
         return None
     first = None
+    log.parent.mkdir(parents=True, exist_ok=True)
     with log.open("a") as out:
-        for step in settings.post_build:
+        for step in steps:
             out.write(f"$ {step}\n")
             out.flush()
             done = subprocess.run(
@@ -315,11 +317,11 @@ def tear_down(settings: Settings, cwd: Path, log: Path) -> str | None:
                 cwd=cwd,
                 stdout=out,
                 stderr=out,
-                env=settings.environment(),
+                env=env,
                 start_new_session=True,
             )
             if done.returncode != 0 and first is None:
-                first = f"post_build: `{step}` exited with code {done.returncode}"
+                first = f"{name}: `{step}` exited with code {done.returncode}"
     return first
 
 
@@ -410,7 +412,7 @@ def check_base(settings: Settings, folder: Path, say=print) -> None:
                     out.write(f"$ {settings.checks_command}\n")
                 out.write(checks_output(settings, outputs))
     finally:
-        torn = tear_down(settings, repo, log)
+        torn = tear_down("post_build", settings.post_build, repo, log, settings.environment())
         shutil.rmtree(home, ignore_errors=True)
     if torn:
         say(f"WARNING: {torn} in the base commit's workspace; see {log}")
@@ -493,7 +495,13 @@ def build_trial(
         status.update(status="failed", reason=f"crashed: {type(error).__name__}: {error}")
     # However the Trial ended, even when stopped: what pre_build started stops here.
     started = time.time()
-    torn = tear_down(settings, trial.workspace, trial.folder / "post_build.log")
+    torn = tear_down(
+        "post_build",
+        settings.post_build,
+        trial.workspace,
+        trial.folder / "post_build.log",
+        settings.environment(),
+    )
     if settings.post_build and trial.workspace.is_dir():
         timings = read_json(trial.folder / "timings.json") or {}
         timings["post_build_seconds"] = time.time() - started

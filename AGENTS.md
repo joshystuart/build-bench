@@ -26,7 +26,8 @@ It must pass before a change is done. CI runs the same command.
   files the Trials write.
 - `transcript.py`, `lines.py` — measurements from transcripts and diffs.
 - `judge.py` — `judge`: measurements and checks, then the judging steps for
-  API and Agent Judges: find (Verdicts), merge (Defects) and check.
+  API and Agent Judges: find (Verdicts), merge (Defects) and check; the
+  throwaway copies they use, `copy_setup` and `post_judge`.
 - `judge_progress.py` — what `judge` shows while it works: a line as each
   step starts, and the live display (drawn by `progress.Screen`).
 - `compare.py` — the fourth judging step, for a Judge with `compare` set: which

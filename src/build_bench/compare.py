@@ -11,6 +11,7 @@ no Variant. Each Comparison is saved in `comparisons/<judge>/`.
 
 from __future__ import annotations
 
+import secrets
 import tempfile
 import threading
 from itertools import combinations
@@ -23,6 +24,8 @@ from .judge import (
     _ask_agent,
     _ask_api,
     _attempt,
+    _fresh_teardown_log,
+    _keep_teardown_failure,
     _record,
     _setup_log,
     _sha,
@@ -33,7 +36,9 @@ from .judge import (
     plan_parts,
     reply_json,
     shipped_prompt,
+    tear_down_judging,
     trial_parts,
+    warn_torn,
     where_things_are,
 )
 from .judge_progress import Ask, Board, ask_of
@@ -138,30 +143,32 @@ def compare(
 
         saved = read_json(path) or {}
         kept = saved if saved.get("prompt_sha") == sha else {}
-        record = board.asking(
+        record = _record(
+            j,
+            first=first.id,
+            second=second.id,
+            prompt_sha=sha,
+            cost_usd=kept.get("cost_usd"),
+            seconds=kept.get("seconds"),
+            better=None,
+            why="",
+        )
+        finished = board.asking(
             ask,
             lambda: _attempt(
-                _record(
-                    j,
-                    first=first.id,
-                    second=second.id,
-                    prompt_sha=sha,
-                    cost_usd=kept.get("cost_usd"),
-                    seconds=kept.get("seconds"),
-                    better=None,
-                    why="",
-                ),
+                record,
                 path,
-                lambda: _ask(settings, folder, j, first, second, instructions, path, agent),
+                lambda: _ask(settings, folder, j, first, second, instructions, path, agent, record),
                 parse,
             ),
         )
         with lock:
             pair = f"{first.id} with {second.id} by {j.name}"
-            if record["status"] == "ok":
+            if finished["status"] == "ok":
                 board.say(f"[compared] {pair}")
-            elif record["status"] == "failed":
-                board.say(f"[compare failed] {pair}: {record['reason']}")
+            elif finished["status"] == "failed":
+                board.say(f"[compare failed] {pair}: {finished['reason']}")
+            warn_torn(board.say, f"comparison {pair}", finished)
 
     in_parallel(one, todo, settings.concurrency, agent, board.say)
     return all(done(task) for task in wanted)
@@ -176,7 +183,10 @@ def _ask(
     instructions: str,
     path: Path,
     agent: Agents,
+    record: dict,
 ) -> tuple[str, float | None]:
+    """Ask `j` which build is better. An Agent Judge's copies are torn down after,
+    and a failure kept in `record`."""
     builds = list(enumerate((first, second), 1))
     if j.type == "api":
         parts = plan_parts(settings, folder)
@@ -184,19 +194,35 @@ def _ask(
             parts += [f"# Build {n}\n", *trial_parts(trial)]
         return _ask_api(settings, j, instructions, "\n".join(parts), agent)
     base = base_commit(settings, folder)
+    # Every Comparison running at once has a `build-1/`, the folder the Judge is told
+    # of, so `copy_setup` and `post_judge` are given a name of this ask's own instead.
+    label = f"compare-{secrets.token_hex(3)}"
     with tempfile.TemporaryDirectory(prefix="build-bench-compare-") as tmp:
         work = Path(tmp) / "builds"
         work.mkdir()
-        rebuilt = ""
-        for n, trial in builds:
-            log = _setup_log(path.with_name(f"{path.stem}.build-{n}"))
-            rebuilt = blind_copy(settings, folder, trial, work / f"build-{n}", base, log) or rebuilt
-        measured = "\n".join(f"# Build {n}\n\n{facts(trial)}" for n, trial in builds)
-        prompt = (
-            f"{instructions}\n\n---\n\n"
-            f"Your working folder holds a copy of each build, in `build-1/` and `build-2/`; "
-            f"change them as you like. In each, every change the build made is uncommitted "
-            f"against the base commit `{base}`: see `git status` and `git diff {base}` "
-            f"there.{rebuilt} {FOLDED} {where_things_are(settings)}\n\n{measured}"
-        )
-        return _ask_agent(settings, j, prompt, work, path.with_suffix(""), agent)
+        try:
+            rebuilt = ""
+            for n, trial in builds:
+                log = _setup_log(path.with_name(f"{path.stem}.build-{n}"))
+                rebuilt = (
+                    blind_copy(
+                        settings, folder, trial, work / f"build-{n}", base, log, f"{label}-{n}"
+                    )
+                    or rebuilt
+                )
+            measured = "\n".join(f"# Build {n}\n\n{facts(trial)}" for n, trial in builds)
+            prompt = (
+                f"{instructions}\n\n---\n\n"
+                f"Your working folder holds a copy of each build, in `build-1/` and "
+                f"`build-2/`; change them as you like. In each, every change the build made "
+                f"is uncommitted against the base commit `{base}`: see `git status` and "
+                f"`git diff {base}` there.{rebuilt} {FOLDED} {where_things_are(settings)}"
+                f"\n\n{measured}"
+            )
+            return _ask_agent(settings, j, prompt, work, path.with_suffix(""), agent)
+        finally:
+            # A copy never made has nothing to tear down, and is skipped.
+            for n, trial in builds:
+                log = _fresh_teardown_log(path.with_name(f"{path.stem}.build-{n}"))
+                torn = tear_down_judging(settings, trial, work / f"build-{n}", f"{label}-{n}", log)
+                _keep_teardown_failure(record, torn)

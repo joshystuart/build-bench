@@ -146,6 +146,151 @@ def test_a_failing_copy_setup_fails_the_judging_step_and_is_tried_again(experime
     assert json.loads(verdict.read_text())["status"] == "ok"
 
 
+# --- Cleaning up after judging ----------------------------------------------------------
+
+
+def containers(tmp_path):
+    """`copy_setup` "starts a container" named after the copy, `post_judge` stops it:
+    `running` holds those still up, `started` every one that ever was."""
+    running, started = tmp_path / "running", tmp_path / "started"
+    running.mkdir()
+    started.mkdir()
+    return (
+        running,
+        started,
+        {
+            "copy_setup": [f'touch "{running}/$BUILD_BENCH_COPY" "{started}/$BUILD_BENCH_COPY"'],
+            # In the copy, before it is removed: what `docker compose down` needs is there.
+            "post_judge": [f'test -f calc.py && rm "{running}/$BUILD_BENCH_COPY"'],
+        },
+    )
+
+
+def test_post_judge_tears_down_every_copy_judge_used(experiment, fake, cli, tmp_path):
+    running, started, steps = containers(tmp_path)
+    settings = built(
+        experiment,
+        cli,
+        variants=TWO_VARIANTS,
+        checks="true",
+        judges=[agent_judge(compare={"max_pairs": 1})],
+        **steps,
+    )
+    code, out, _ = cli("judge", settings)
+    assert code == 0, out
+    assert list(running.iterdir()) == []
+    # Each copy has a name of its own, so one copy's teardown never stops another's:
+    # the checks' copy, a find and a check per Trial, and both builds of one Comparison.
+    names = sorted(p.name for p in started.iterdir())
+    assert len(names) == 8, names
+    folder = results_folder(settings)
+    for trial in ("alpha-1", "beta-1"):
+        here = folder / "trials" / trial
+        assert f'$ test -f calc.py && rm "{running}/' in (here / "checks.log").read_text()
+        assert measured(settings, trial)["checks"]["post_judge_failure"] is None
+        for step in ("verdicts", "defect-checks"):
+            assert (here / step / "blind-agent.post_judge.log").read_text().startswith("$ test")
+            record = json.loads((here / step / "blind-agent.json").read_text())
+            assert record["post_judge_failure"] is None
+    [pair] = (folder / "comparisons" / "blind-agent").glob("*.json")
+    for n in (1, 2):
+        assert pair.with_suffix(f".build-{n}.post_judge.log").exists()
+    assert json.loads(pair.read_text())["post_judge_failure"] is None
+    assert "[warn]" not in out
+
+
+def test_post_judge_tears_down_in_place_checks(experiment, fake, cli, tmp_path):
+    torn = tmp_path / "torn"
+    settings = built(
+        experiment,
+        cli,
+        checks="true",
+        checks_in_place=True,
+        post_judge=[f'echo "$BUILD_BENCH_WORKSPACE" > "{torn}"'],
+    )
+    assert cli("judge", settings)[0] == 0
+    repo = workspace_home(results_folder(settings) / "trials" / "alpha-1") / "repo"
+    assert torn.read_text().strip() == str(repo)
+
+
+def test_post_judge_runs_after_a_judge_fails(experiment, fake, cli, tmp_path):
+    running, started, steps = containers(tmp_path)
+    settings = built(experiment, cli, judges=[agent_judge()], **steps)
+    fake.set(judge_mode="crash")
+    code, out, _ = cli("judge", settings)
+    assert code == 1
+    assert "[verdict failed] alpha-1 by blind-agent" in out
+    assert len(list(started.iterdir())) == 1
+    assert list(running.iterdir()) == []
+
+
+def test_a_judge_asked_again_keeps_only_its_latest_teardown_log(experiment, fake, cli):
+    settings = built(
+        experiment,
+        cli,
+        variants=TWO_VARIANTS,
+        judges=[agent_judge(compare={"max_pairs": 1})],
+        post_judge=["echo torn down"],
+    )
+    fake.set(judge_mode="crash")
+    assert cli("judge", settings)[0] == 1
+    fake.set(judge_mode="ok")
+    code, out, _ = cli("judge", settings)
+    assert code == 0, out
+    # Each failed ask was asked again; its log, like its `copy_setup` log, is the latest's.
+    folder = results_folder(settings)
+    [pair] = (folder / "comparisons" / "blind-agent").glob("*.json")
+    logs = [folder / "trials/alpha-1/verdicts/blind-agent.post_judge.log"]
+    logs += [pair.with_suffix(f".build-{n}.post_judge.log") for n in (1, 2)]
+    for log in logs:
+        assert log.read_text() == "$ echo torn down\ntorn down\n", log
+
+
+def test_post_judge_runs_after_copy_setup_fails(experiment, fake, cli, tmp_path):
+    running, started, steps = containers(tmp_path)
+    steps["copy_setup"].append("exit 4")
+    settings = built(experiment, cli, checks="true", judges=[agent_judge()], **steps)
+    code, out, _ = cli("judge", settings)
+    assert code == 1
+    assert measured(settings)["checks"]["reason"] == "copy_setup: `exit 4` exited with code 4"
+    assert "[verdict failed] alpha-1 by blind-agent: copy_setup: `exit 4`" in out
+    assert len(list(started.iterdir())) == 2
+    assert list(running.iterdir()) == []
+
+
+def test_post_judge_runs_every_step_and_a_failure_only_warns(experiment, fake, cli, tmp_path):
+    settings = built(
+        experiment,
+        cli,
+        checks="true",
+        judges=[agent_judge()],
+        post_judge=[f"touch {tmp_path}/one", "exit 5", f"touch {tmp_path}/three"],
+    )
+    code, out, _ = cli("judge", settings)
+    assert code == 0, out
+    assert (tmp_path / "one").exists() and (tmp_path / "three").exists()
+    failure = "post_judge: `exit 5` exited with code 5"
+    checks = measured(settings)["checks"]
+    assert (checks["passed"], checks["post_judge_failure"]) == (True, failure)
+    verdict = results_folder(settings) / "trials/alpha-1/verdicts/blind-agent.json"
+    record = json.loads(verdict.read_text())
+    assert (record["status"], record["post_judge_failure"]) == ("ok", failure)
+    assert f"[warn]  alpha-1 checks: {failure}" in out
+    assert f"[warn]  verdict alpha-1 by blind-agent: {failure}" in out
+    assert f"[warn]  Defect check alpha-1 by blind-agent: {failure}" in out
+
+
+def test_post_judge_runs_after_a_judge_stopped_with_ctrl_c(experiment, fake, cli, tmp_path):
+    running, started, steps = containers(tmp_path)
+    settings = built(experiment, cli, judges=[agent_judge()], **steps)
+    fake.set(judge_mode="hang")
+    press_ctrl_c(lambda: len(fake.calls(judge=True)) == 1)
+    code, _, _ = cli("judge", settings)
+    assert code == 130
+    assert len(list(started.iterdir())) == 1
+    assert list(running.iterdir()) == []
+
+
 # --- Named Checks ---------------------------------------------------------------------
 
 THREE = [

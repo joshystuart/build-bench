@@ -43,6 +43,7 @@ from .run import (
     run_steps,
     runtime_problem,
     settings_key,
+    tear_down,
 )
 from .settings import Judge, Settings, path_rules
 
@@ -208,7 +209,7 @@ def measure_trial(settings: Settings, folder: Path, trial: Trial, say=print) -> 
             say(f"[checks again] {trial.id}: {why}")
             (trial.folder / "checks.log").unlink(missing_ok=True)
             shutil.rmtree(trial.folder / "checks", ignore_errors=True)
-            _measure_checks(settings, trial, saved)
+            _measure_checks(settings, trial, saved, say)
             write_json(target, saved)
             if saved.get("error"):
                 say(f"[measure failed] {trial.id}: {saved['error']}")
@@ -224,7 +225,7 @@ def measure_trial(settings: Settings, folder: Path, trial: Trial, say=print) -> 
     test_paths, ignore_paths, rust_inline = path_rules(settings)
     diff = _text(trial.folder / "diff-full.patch") or _text(trial.folder / "diff.patch")
     measured["lines"] = lines.count_lines(diff, test_paths, ignore_paths, rust_inline)
-    _measure_checks(settings, trial, measured)
+    _measure_checks(settings, trial, measured, say)
     write_json(target, measured)
     if measured.get("error"):
         say(f"[measure failed] {trial.id}: {measured['error']}")
@@ -233,10 +234,11 @@ def measure_trial(settings: Settings, folder: Path, trial: Trial, say=print) -> 
     return measured
 
 
-def _measure_checks(settings: Settings, trial: Trial, measured: dict) -> None:
+def _measure_checks(settings: Settings, trial: Trial, measured: dict, say=print) -> None:
     """Run the checks into `measured`, with the settings they ran under."""
     try:
         measured["checks"] = run_checks(settings, trial)
+        warn_torn(say, f"{trial.id} checks", measured["checks"])
     except RestoreFailed as error:
         # The workspace no longer holds what the build left, so judging it would
         # judge the checks. It stays failed until it is measured from nothing.
@@ -250,11 +252,12 @@ def _text(path: Path) -> str:
 
 def run_checks(settings: Settings, trial: Trial) -> dict:
     """Run `checks` in a throwaway copy, so the saved workspace never changes, or
-    with `checks_in_place` in the workspace itself."""
+    with `checks_in_place` in the workspace itself. `post_judge` runs there after."""
     if not settings.checks:
         return {"ran": False, "reason": "the settings name no checks command"}
     if not trial.workspace.is_dir():
         return {"ran": False, "reason": "the Trial's workspace is not here (removed by clean?)"}
+    log = trial.folder / "checks.log"
     if settings.checks_in_place:
         with tempfile.TemporaryDirectory(prefix="build-bench-snapshot-") as tmp:
             index = Path(tmp) / "index"
@@ -263,26 +266,35 @@ def run_checks(settings: Settings, trial: Trial) -> dict:
             except (RuntimeError, OSError) as error:
                 return {"ran": False, "reason": f"the workspace could not be saved: {error}"}
             try:
-                with (trial.folder / "checks.log").open("w") as out:
-                    failure = runtime_problem(settings, trial.workspace, out)
-                if not failure:
-                    result = _checks_with_logs(settings, trial, trial.workspace)
+                try:
+                    with log.open("w") as out:
+                        failure = runtime_problem(settings, trial.workspace, out)
+                    if not failure:
+                        result = _checks_with_logs(settings, trial, trial.workspace)
+                finally:
+                    torn = tear_down_judging(settings, trial, trial.workspace, None, log)
             finally:
                 # Even when stopped halfway, so the next `judge` never takes what
                 # the checks left for the build.
                 _put_back(trial.workspace, index, before)
-        return {"ran": False, "reason": failure} if failure else result
-    log = trial.folder / "checks.log"
+        result = {"ran": False, "reason": failure} if failure else result
+        return {**result, "post_judge_failure": torn}
+    name = f"checks-{secrets.token_hex(3)}"
     with tempfile.TemporaryDirectory(prefix="build-bench-checks-") as tmp:
-        copy = Path(tmp) / "trial"
+        copy = Path(tmp) / name
         shutil.copytree(trial.workspace, copy, symlinks=True)
-        with log.open("w") as out:
-            failure = set_up_copy(settings, trial, copy, out) or runtime_problem(
-                settings, copy, out
-            )
-        if failure:
-            return {"ran": False, "reason": failure}
-        return _checks_with_logs(settings, trial, copy)
+        try:
+            with log.open("w") as out:
+                failure = set_up_copy(settings, trial, copy, name, out) or runtime_problem(
+                    settings, copy, out
+                )
+            if failure:
+                result = {"ran": False, "reason": failure}
+            else:
+                result = _checks_with_logs(settings, trial, copy)
+        finally:
+            torn = tear_down_judging(settings, trial, copy, name, log)
+    return {**result, "post_judge_failure": torn}
 
 
 def _checks_with_logs(settings: Settings, trial: Trial, cwd: Path) -> dict:
@@ -298,14 +310,43 @@ def _checks_with_logs(settings: Settings, trial: Trial, cwd: Path) -> dict:
     return result
 
 
-#: The variable that tells `copy_setup` where the Trial's own workspace is.
+#: The variable that tells `copy_setup` and `post_judge` where the Trial's own workspace is.
 WORKSPACE_VARIABLE = "BUILD_BENCH_WORKSPACE"
+#: The variable that names a throwaway copy: no two copies in use at once share it,
+#: so it can name what the copy starts (a Docker Compose project, say).
+COPY_VARIABLE = "BUILD_BENCH_COPY"
 
 
-def set_up_copy(settings: Settings, trial: Trial, copy: Path, out) -> str | None:
-    """Run `copy_setup` in a throwaway copy of `trial`. Returns why it failed, if it did."""
+def _copy_env(settings: Settings, trial: Trial, name: str | None) -> dict:
     env = {**settings.environment(), WORKSPACE_VARIABLE: str(trial.workspace)}
+    return env if name is None else {**env, COPY_VARIABLE: name}
+
+
+def set_up_copy(settings: Settings, trial: Trial, copy: Path, name: str, out) -> str | None:
+    """Run `copy_setup` in a throwaway copy of `trial` called `name`. Returns why it
+    failed, if it did."""
+    env = _copy_env(settings, trial, name)
     return run_steps("copy_setup", settings.copy_setup, copy, out, env=env)
+
+
+def tear_down_judging(
+    settings: Settings, trial: Trial, cwd: Path, name: str | None, log: Path
+) -> str | None:
+    """Run `post_judge` in `cwd`: a throwaway copy of `trial` called `name`, or with
+    `name` None the Trial's own workspace. Returns why the first step failed, if one did."""
+    env = _copy_env(settings, trial, name)
+    return tear_down("post_judge", settings.post_judge, cwd, log, env)
+
+
+def _keep_teardown_failure(record: dict, failure: str | None) -> None:
+    """Keep the first `post_judge` failure of an ask in its record."""
+    record["post_judge_failure"] = record.get("post_judge_failure") or failure
+
+
+def warn_torn(say, what: str, record: dict) -> None:
+    """Say that `post_judge` failed after the ask `what`, which still counts."""
+    if torn := record.get("post_judge_failure"):
+        say(f"[warn]  {what}: {torn}")
 
 
 class RestoreFailed(Exception):
@@ -603,24 +644,30 @@ def ask_about_trial(
     extra: str,
     streams: Path,
     agent: Agents,
+    record: dict,
 ) -> tuple[str, float | None]:
-    """Ask one Judge about one Trial, shown under `label`. `extra` follows the evidence."""
+    """Ask one Judge about one Trial, shown under `label`. `extra` follows the evidence.
+    An Agent Judge's copy is torn down after, and a failure kept in `record`."""
     if j.type == "api":
         user = evidence(settings, folder, trial, label) + extra
         return _ask_api(settings, j, instructions, user, agent)
     base = base_commit(settings, folder)
     with tempfile.TemporaryDirectory(prefix="build-bench-judge-") as tmp:
         work = Path(tmp) / label
-        rebuilt = blind_copy(settings, folder, trial, work, base, _setup_log(streams))
-        prompt = (
-            f"{instructions}\n\n---\n\n# Trial {label}\n\n"
-            f"Your working folder is a copy of the build; change it as you like. "
-            f"Every change the build made is uncommitted against the base commit "
-            f"`{base}`: see `git status` and `git diff {base}`.{rebuilt} {FOLDED} "
-            f"{where_things_are(settings)}\n\n"
-            f"{facts(trial)}{extra}"
-        )
-        return _ask_agent(settings, j, prompt, work, streams, agent)
+        try:
+            rebuilt = blind_copy(settings, folder, trial, work, base, _setup_log(streams))
+            prompt = (
+                f"{instructions}\n\n---\n\n# Trial {label}\n\n"
+                f"Your working folder is a copy of the build; change it as you like. "
+                f"Every change the build made is uncommitted against the base commit "
+                f"`{base}`: see `git status` and `git diff {base}`.{rebuilt} {FOLDED} "
+                f"{where_things_are(settings)}\n\n"
+                f"{facts(trial)}{extra}"
+            )
+            return _ask_agent(settings, j, prompt, work, streams, agent)
+        finally:
+            torn = tear_down_judging(settings, trial, work, label, _fresh_teardown_log(streams))
+            _keep_teardown_failure(record, torn)
 
 
 def base_commit(settings: Settings, folder: Path) -> str:
@@ -652,13 +699,28 @@ def _setup_log(streams: Path) -> Path:
     return streams.with_name(streams.name + ".copy_setup.log")
 
 
+def _fresh_teardown_log(streams: Path) -> Path:
+    """Where `post_judge` output goes for a Judge whose own output is named after `streams`,
+    emptied first: an ask run again keeps only its latest, as its `copy_setup` log does."""
+    log = streams.with_name(streams.name + ".post_judge.log")
+    log.unlink(missing_ok=True)
+    return log
+
+
 def blind_copy(
-    settings: Settings, folder: Path, trial: Trial, work: Path, base: str, setup_log: Path
+    settings: Settings,
+    folder: Path,
+    trial: Trial,
+    work: Path,
+    base: str,
+    setup_log: Path,
+    name: str | None = None,
 ) -> str:
     """Put a copy of the Trial's build at `work` for an Agent Judge: every change
     uncommitted on the base commit, and the plan as first written, then run
-    `copy_setup` there, its output in `setup_log`. Returns what to tell the Judge
-    when the copy had to be rebuilt, else nothing."""
+    `copy_setup` there, its output in `setup_log`. The copy is called `name`, else
+    after its folder. Returns what to tell the Judge when the copy had to be
+    rebuilt, else nothing."""
     rebuilt = ""
     if trial.workspace.is_dir():
         shutil.copytree(trial.workspace, work, symlinks=True)
@@ -677,7 +739,7 @@ def blind_copy(
     if settings.copy_setup:
         setup_log.parent.mkdir(parents=True, exist_ok=True)
         with setup_log.open("w") as out:
-            failure = set_up_copy(settings, trial, work, out)
+            failure = set_up_copy(settings, trial, work, name or work.name, out)
         if failure:
             # A Judge in a copy that is not set up would review the setup, not the build.
             raise JudgeFailed(failure)
@@ -846,6 +908,7 @@ def find(
                 board.say(f"[verdict] {trial.id} by {j.name}")
             elif verdict["status"] == "failed":
                 board.say(f"[verdict failed] {trial.id} by {j.name}: {verdict['reason']}")
+            warn_torn(board.say, f"verdict {trial.id} by {j.name}", verdict)
 
     in_parallel(one, todo, settings.concurrency, agent, board.say)
     return all(
@@ -858,11 +921,13 @@ def find_one(settings: Settings, folder: Path, j: Judge, trial: Trial, agent: Ag
     instructions = judge_prompt(settings, j)
     target = trial.folder / "verdicts" / f"{j.name}.json"
     target.parent.mkdir(exist_ok=True)
+    record = _record(j, label=label, prompt_sha=_sha(instructions))
+    streams = target.with_suffix("")
     return _attempt(
-        _record(j, label=label, prompt_sha=_sha(instructions)),
+        record,
         target,
         lambda: ask_about_trial(
-            settings, folder, j, trial, label, instructions, "", target.with_suffix(""), agent
+            settings, folder, j, trial, label, instructions, "", streams, agent, record
         ),
         lambda reply: check_findings(reply_json(reply, "findings")),
     )
@@ -1172,7 +1237,7 @@ def check(
         def call() -> tuple[str, float | None]:
             streams = target.with_suffix("")
             return ask_about_trial(
-                settings, folder, j, trial, label, instructions, asked, streams, agent
+                settings, folder, j, trial, label, instructions, asked, streams, agent, record
             )
 
         def parse(reply: str) -> dict:
@@ -1185,6 +1250,7 @@ def check(
                 board.say(f"[checked] {trial.id} by {j.name}")
             elif done["status"] == "failed":
                 board.say(f"[check failed] {trial.id} by {j.name}: {done['reason']}")
+            warn_torn(board.say, f"Defect check {trial.id} by {j.name}", done)
 
     in_parallel(one, todo, settings.concurrency, agent, board.say)
     return all(
