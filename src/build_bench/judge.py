@@ -238,8 +238,7 @@ def _measure_checks(settings: Settings, trial: Trial, measured: dict, say=print)
     """Run the checks into `measured`, with the settings they ran under."""
     try:
         measured["checks"] = run_checks(settings, trial)
-        if torn := measured["checks"].get("post_judge_failure"):
-            say(f"[warn]  {trial.id} checks: {torn}")
+        warn_torn(say, f"{trial.id} checks", measured["checks"])
     except RestoreFailed as error:
         # The workspace no longer holds what the build left, so judging it would
         # judge the checks. It stays failed until it is measured from nothing.
@@ -339,7 +338,7 @@ def tear_down_judging(
     return tear_down("post_judge", settings.post_judge, cwd, log, env)
 
 
-def _torn_down(record: dict, failure: str | None) -> None:
+def _keep_teardown_failure(record: dict, failure: str | None) -> None:
     """Keep the first `post_judge` failure of an ask in its record."""
     record["post_judge_failure"] = record.get("post_judge_failure") or failure
 
@@ -667,8 +666,8 @@ def ask_about_trial(
             )
             return _ask_agent(settings, j, prompt, work, streams, agent)
         finally:
-            torn = tear_down_judging(settings, trial, work, label, _teardown_log(streams))
-            _torn_down(record, torn)
+            torn = tear_down_judging(settings, trial, work, label, _fresh_teardown_log(streams))
+            _keep_teardown_failure(record, torn)
 
 
 def base_commit(settings: Settings, folder: Path) -> str:
@@ -700,9 +699,12 @@ def _setup_log(streams: Path) -> Path:
     return streams.with_name(streams.name + ".copy_setup.log")
 
 
-def _teardown_log(streams: Path) -> Path:
-    """Where `post_judge` output goes for a Judge whose own output is named after `streams`."""
-    return streams.with_name(streams.name + ".post_judge.log")
+def _fresh_teardown_log(streams: Path) -> Path:
+    """Where `post_judge` output goes for a Judge whose own output is named after `streams`,
+    emptied first: an ask run again keeps only its latest, as its `copy_setup` log does."""
+    log = streams.with_name(streams.name + ".post_judge.log")
+    log.unlink(missing_ok=True)
+    return log
 
 
 def blind_copy(

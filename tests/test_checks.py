@@ -224,6 +224,28 @@ def test_post_judge_runs_after_a_judge_fails(experiment, fake, cli, tmp_path):
     assert list(running.iterdir()) == []
 
 
+def test_a_judge_asked_again_keeps_only_its_latest_teardown_log(experiment, fake, cli):
+    settings = built(
+        experiment,
+        cli,
+        variants=TWO_VARIANTS,
+        judges=[agent_judge(compare={"max_pairs": 1})],
+        post_judge=["echo torn down"],
+    )
+    fake.set(judge_mode="crash")
+    assert cli("judge", settings)[0] == 1
+    fake.set(judge_mode="ok")
+    code, out, _ = cli("judge", settings)
+    assert code == 0, out
+    # Each failed ask was asked again; its log, like its `copy_setup` log, is the latest's.
+    folder = results_folder(settings)
+    [pair] = (folder / "comparisons" / "blind-agent").glob("*.json")
+    logs = [folder / "trials/alpha-1/verdicts/blind-agent.post_judge.log"]
+    logs += [pair.with_suffix(f".build-{n}.post_judge.log") for n in (1, 2)]
+    for log in logs:
+        assert log.read_text() == "$ echo torn down\ntorn down\n", log
+
+
 def test_post_judge_runs_after_copy_setup_fails(experiment, fake, cli, tmp_path):
     running, started, steps = containers(tmp_path)
     steps["copy_setup"].append("exit 4")

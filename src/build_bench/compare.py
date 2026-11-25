@@ -24,12 +24,12 @@ from .judge import (
     _ask_agent,
     _ask_api,
     _attempt,
+    _fresh_teardown_log,
+    _keep_teardown_failure,
     _record,
     _setup_log,
     _sha,
     _str,
-    _teardown_log,
-    _torn_down,
     base_commit,
     blind_copy,
     facts,
@@ -143,7 +143,7 @@ def compare(
 
         saved = read_json(path) or {}
         kept = saved if saved.get("prompt_sha") == sha else {}
-        asked = _record(
+        record = _record(
             j,
             first=first.id,
             second=second.id,
@@ -153,22 +153,22 @@ def compare(
             better=None,
             why="",
         )
-        record = board.asking(
+        finished = board.asking(
             ask,
             lambda: _attempt(
-                asked,
+                record,
                 path,
-                lambda: _ask(settings, folder, j, first, second, instructions, path, agent, asked),
+                lambda: _ask(settings, folder, j, first, second, instructions, path, agent, record),
                 parse,
             ),
         )
         with lock:
             pair = f"{first.id} with {second.id} by {j.name}"
-            if record["status"] == "ok":
+            if finished["status"] == "ok":
                 board.say(f"[compared] {pair}")
-            elif record["status"] == "failed":
-                board.say(f"[compare failed] {pair}: {record['reason']}")
-            warn_torn(board.say, f"comparison {pair}", record)
+            elif finished["status"] == "failed":
+                board.say(f"[compare failed] {pair}: {finished['reason']}")
+            warn_torn(board.say, f"comparison {pair}", finished)
 
     in_parallel(one, todo, settings.concurrency, agent, board.say)
     return all(done(task) for task in wanted)
@@ -223,6 +223,6 @@ def _ask(
         finally:
             # A copy never made has nothing to tear down, and is skipped.
             for n, trial in builds:
-                log = _teardown_log(path.with_name(f"{path.stem}.build-{n}"))
+                log = _fresh_teardown_log(path.with_name(f"{path.stem}.build-{n}"))
                 torn = tear_down_judging(settings, trial, work / f"build-{n}", f"{label}-{n}", log)
-                _torn_down(record, torn)
+                _keep_teardown_failure(record, torn)
