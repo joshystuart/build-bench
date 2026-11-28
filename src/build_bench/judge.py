@@ -443,6 +443,9 @@ def reply_json(reply: str, key: str) -> dict:
     candidates = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", reply, flags=re.S)
     decoder = json.JSONDecoder()
     if not candidates:
+        # Tried last: everything from the first brace to the last, for a reply
+        # whose only object needs its stray quotes escaped before it parses.
+        candidates.append(reply[reply.find("{") : reply.rfind("}") + 1])
         for i in [m.start() for m in re.finditer(r"\{", reply)]:
             try:
                 value, _ = decoder.raw_decode(reply[i:])
@@ -452,12 +455,31 @@ def reply_json(reply: str, key: str) -> dict:
                 candidates.append(json.dumps(value))
     for text in reversed(candidates):
         try:
-            value = json.loads(text)
+            value = _loads(text)
         except json.JSONDecodeError:
             continue
         if isinstance(value, dict) and key in value:
             return value
     raise NoJSON(f"the reply holds no JSON object with {key}")
+
+
+#: The most quotes left unescaped inside a reply's strings that are escaped for it.
+STRAY_QUOTES = 100
+
+
+def _loads(text: str) -> Any:
+    """`text` as JSON. A model quoting code can leave a quote inside a string
+    unescaped, as in `"the `"mine"` folder"`, which ends the string early; the
+    parser then stops right after that quote, and it is escaped instead."""
+    for _ in range(STRAY_QUOTES):
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError as error:
+            before = text[: error.pos].rstrip()
+            if error.msg != "Expecting ',' delimiter" or not before.endswith('"'):
+                raise
+            text = f'{before[:-1]}\\"{text[len(before) :]}'
+    return json.loads(text)
 
 
 def facts(trial: Trial) -> str:

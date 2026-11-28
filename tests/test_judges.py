@@ -14,6 +14,8 @@ import pytest
 import replies
 from conftest import press_ctrl_c, results_folder, workspace_home
 
+import build_bench.judge as judge_module
+
 GOOD = replies.FOUND
 NO_SEVERITY = replies.fenced({"findings": [{"title": "mul is missing"}], "note": ""})
 BAD_SEVERITY = replies.fenced({"findings": [{"title": "t", "severity": "huge"}], "note": ""})
@@ -893,3 +895,18 @@ def test_agent_judge_reports_a_workspace_it_cannot_rebuild(experiment, fake, cli
     found = verdict(settings, "secretvariant-1", "blind-agent")
     assert found["status"] == "failed"
     assert "could not be rebuilt from its saved diff" in found["reason"]
+
+
+STRAY = '{"answers": [{"id": "D1", "evidence": "keeps the `"mine"` folder, then "deletes" it"}]}'
+
+
+@pytest.mark.parametrize("reply", [f"```json\n{STRAY}\n```", f"Checked.\n\n{STRAY}\n"])
+def test_quotes_a_judge_left_unescaped_in_a_string_are_read_as_part_of_it(reply):
+    found = judge_module.reply_json(reply, "answers")
+    assert found["answers"][0]["evidence"] == 'keeps the `"mine"` folder, then "deletes" it'
+
+
+def test_a_reply_broken_other_than_by_stray_quotes_is_still_refused():
+    reply = '```json\n{"answers": [{"id": "D1"} {"id": "D2"}]}\n```'
+    with pytest.raises(judge_module.VerdictError, match="no JSON object with answers"):
+        judge_module.reply_json(reply, "answers")
