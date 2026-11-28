@@ -63,12 +63,14 @@
 <figure class='chart'>
 <p class='chart-title'>Which agent was running, minute by minute</p>
 <p class='chart-sub'>Each bar is one agent, from its first message to its last. Every Trial uses
-the same time scale. Hover or tab to a row to read it.</p>
+the same scale of active time: each wait of {{ idle_minutes }} minutes or more when the main agent
+sat idle with nothing running is cut out, and a dashed line marks where. Hover or tab to a row to
+read it.</p>
 <ul class='legend' aria-label='Legend'>
 <li><span class='sw main'></span>Main agent working</li>
 <li><span class='lk'></span>Main agent waiting on subagents</li>
 <li><span class='sw sub'></span>Subagent</li>
-<li><span class='sw gap'></span>Main agent idle, nothing running</li>
+<li><span class='sw cut'></span>Idle wait cut out</li>
 </ul>
 <div class='scroll'><svg class='timeline' viewBox='0 0 1000 {{ t.bottom + 40 }}' role='group'
  aria-label='Timeline of every agent in every Trial'>
@@ -77,12 +79,15 @@ the same time scale. Hover or tab to a row to read it.</p>
  y1='{{ t.top }}' y2='{{ t.bottom }}'/>
 <text class='tick' x='{{ tick.x|px }}' y='{{ t.bottom + 16 }}' text-anchor='middle'>{{ tick.label }}</text>
 {% endfor %}
-<text class='tick' x='{{ t.right }}' y='{{ t.bottom + 34 }}' text-anchor='end'>minutes</text>
+<text class='tick' x='{{ t.right }}' y='{{ t.bottom + 34 }}' text-anchor='end'>active minutes</text>
 {% for g in t.groups %}
 <g class='trial' role='group' aria-label='Timeline of {{ g.trial }}'>
 <text class='group-label' x='0' y='{{ g.y + 20 }}'>{{ g.trial }}</text>
 <text class='group-note{{ " bad" if g.bad }}' x='{{ t.right }}' y='{{ g.y + 20 }}'
  text-anchor='end'>{{ g.note }}</text>
+{% for c in g.cuts %}
+<line class='cut' x1='{{ c.x|px }}' x2='{{ c.x|px }}' y1='{{ c.y1 }}' y2='{{ c.y2 }}'/>
+{% endfor %}
 {% for row in g.rows %}
 <g class='agent' tabindex='0' role='img' aria-label='{{ row.tip|join(", ") }}'
  data-tip='{{ row.tip|join("\n") }}'>

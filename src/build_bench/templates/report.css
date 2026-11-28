@@ -53,7 +53,7 @@ figure.chart { margin: 16px 0; background: var(--surface); border: 1px solid var
 .sw { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
 .sw.main { background: var(--main); }
 .sw.sub { background: var(--sub); }
-.sw.gap { border: 1px dashed var(--faint); box-sizing: border-box; }
+.sw.cut { width: 0; height: 14px; border-radius: 0; border-left: 2px dashed var(--muted); }
 .lk { width: 16px; height: 2px; border-radius: 1px; display: inline-block;
   background: var(--faint); }
 svg { display: block; width: 100%; height: auto; overflow: visible; }
@@ -70,6 +70,7 @@ svg text { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
 .mark.main { fill: var(--main); }
 .mark.sub { fill: var(--sub); }
 .wait-track { stroke: var(--faint); stroke-width: 2; stroke-linecap: round; }
+.cut { stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 3 3; }
 .agent { outline: none; cursor: default; }
 .agent .hit { fill: transparent; pointer-events: all; }
 .agent:hover .mark, .agent:focus .mark { opacity: 0.72; }

@@ -43,6 +43,7 @@ from .report import (
     tables,
 )
 from .results import read_json
+from .transcript import IDLE_SECONDS
 
 _TEMPLATES = files("build_bench") / "templates"
 
@@ -101,12 +102,22 @@ class AgentRow:
 
 
 @dataclass
+class Cut:
+    """Where an idle wait was cut out of a Trial's timeline: a line across its rows."""
+
+    x: float
+    y1: int
+    y2: int
+
+
+@dataclass
 class TrialGroup:
     trial: str
     note: str
     bad: bool
     y: int
     rows: list[AgentRow] = field(default_factory=list)
+    cuts: list[Cut] = field(default_factory=list)
 
 
 @dataclass
@@ -185,9 +196,21 @@ def _working(total: float, waits: list) -> list[tuple[float, float]]:
     return out
 
 
+def _shown(seconds: float, idle: list) -> float:
+    """Where a moment of a Trial falls on its timeline once its idle waits are cut out."""
+    return seconds - sum(min(max(seconds - s, 0.0), e - s) for s, e in idle)
+
+
 def _timeline(rows: list[dict]) -> Timeline:
-    """Every Trial's agents on one shared time scale, one group of rows per Trial."""
-    scale = max(r["timeline"]["total_seconds"] for r in rows) or 1.0
+    """Every Trial's agents on one shared scale of active time, one group of rows per
+    Trial. The idle waits active time leaves out are cut out of the bars too: the
+    main agent sat idle with nothing running, so drawn to scale they would read as
+    the Trial taking that long."""
+
+    def active(t: dict) -> float:
+        return _shown(t["total_seconds"], t.get("idle", []))
+
+    scale = max(active(r["timeline"]) for r in rows) or 1.0
     names = [s["name"] for r in rows for s in r["timeline"]["subagents"]] + ["Main agent"]
     # About 7 units a character at 12px, so the longest name ends before the bars start.
     left = min(280, max(110, 7 * max(len(n) for n in names) + 18))
@@ -211,42 +234,46 @@ def _timeline(rows: list[dict]) -> Timeline:
     for r in rows:
         t = r["timeline"]
         subs = t["subagents"]
-        note = f"{_clock(t['total_seconds'])} · {len(subs)} subagent{'s' * (len(subs) != 1)}"
+        total, waits, idle = t["total_seconds"], t["waits"], t.get("idle", [])
+        waited = total - sum(e - s for s, e in _working(total, waits))
+        idled = sum(e - s for s, e in idle)
+
+        def at(seconds: float, idle: list = idle) -> float:
+            return x(_shown(seconds, idle))
+
+        note = f"{_clock(total - idled)} active · {len(subs)} subagent{'s' * (len(subs) != 1)}"
         bad = bool(r.get("changed_nothing"))
-        if r.get("idle_minutes"):
-            note += f" · idle {_clock(r['idle_minutes'] * 60)}"
+        if idle:
+            note += f" · {_clock(idled)} idle cut out"
         if bad:
             note += " · changed nothing"
         group = TrialGroup(r["trial"], note, bad, y)
         groups.append(group)
         y += group_h
+        top_row = y
 
-        total, waits, idle = t["total_seconds"], t["waits"], t.get("idle", [])
-        waited = total - sum(e - s for s, e in _working(total, waits))
-        idled = sum(e - s for s, e in idle)
-        tip = [f"{_clock(total)} in all", f"Main agent · {r['trial']}"]
+        tip = [f"{_clock(total - idled)} active", f"Main agent · {r['trial']}"]
         if subs:
-            share = round(100 * waited / total) if total else 0
+            share = round(100 * waited / (total - idled)) if total > idled else 0
             tip.append(
                 f"Working {_clock(total - waited - idled)} · waiting on subagents "
                 f"{_clock(waited)} ({share}%)"
             )
         if idle:
-            tip.append(f"Idle, nothing running {_clock(idled)}")
+            tip.append(f"Idle, nothing running {_clock(idled)}, cut out · {_clock(total)} in all")
         tip.append(f"Cost {_money(t.get('main_cost_usd'))}")
         main = agent(
             "Main agent",
             tip,
-            x(0),
-            x(total),
+            at(0),
+            at(total),
             y,
-            # Idle waits are left blank: nothing was running.
-            [bar("main", x(s), x(e), y) for s, e in _working(total, waits + idle)],
+            [bar("main", at(s), at(e), y) for s, e in _working(total, waits + idle)],
         )
         main.waits = [
-            Wait(x(s) + 2, max(x(e) - 2, x(s) + 2), y + row_h / 2)
+            Wait(at(s) + 2, max(at(e) - 2, at(s) + 2), y + row_h / 2)
             for s, e in waits
-            if x(e) - x(s) >= 4
+            if at(e) - at(s) >= 4
         ]
         group.rows.append(main)
         y += row_h
@@ -259,10 +286,11 @@ def _timeline(rows: list[dict]) -> Timeline:
                 f"Ran from {_clock(s['start'])} to {_clock(s['end'])}",
                 f"Cost {_money(s.get('cost_usd'))}",
             ]
-            x0, x1 = x(s["start"]), x(s["end"])
+            x0, x1 = at(s["start"]), at(s["end"])
             group.rows.append(agent(s["name"], tip, x0, x1, y, [bar("sub", x0, x1, y)]))
             y += row_h
             table.append(TimeRow(r["trial"], s["name"], s["start"], s["end"], s.get("cost_usd")))
+        group.cuts = [Cut(at(s), top_row, y) for s, _ in idle]
         waiting = "Main agent waiting on subagents"
         table += [TimeRow(r["trial"], waiting, s, e, None) for s, e in waits]
         table += [TimeRow(r["trial"], "Main agent idle", s, e, None) for s, e in idle]
@@ -292,6 +320,7 @@ def html(data: dict, insights: bool = False) -> str:
         problems=_problems(data),
         tables=tables(data),
         timeline=_timeline(timed) if timed else None,
+        idle_minutes=f"{IDLE_SECONDS / 60:g}",
         failed_judging=failed_judging_lines(data),
         retry=RETRY.replace("`", ""),
         diffs=DIFFS,

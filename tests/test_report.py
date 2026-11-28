@@ -844,16 +844,25 @@ def test_html_is_self_contained_with_shared_scale_timelines(saved, cli, no_model
         return max(float(x) + float(w) for x, w in bars)
 
     zero = float(re.search(r"<line class='axis' x1='([\d.]+)'", svgs[0]).group(1))
-    # v1-2 ran for 20 minutes, the longest, and fills the scale; v1-1 ran 10, v2-2 five.
-    full = main_end(groups["v1-2"]) - zero
-    assert main_end(groups["v1-1"]) - zero == pytest.approx(full / 2, abs=0.2)
-    assert main_end(groups["v2-2"]) - zero == pytest.approx(full / 4, abs=0.2)
+    # The scale is active time. v2-1 was active 15 minutes, the longest, and fills it;
+    # v1-1 was active 10 and v2-2 five.
+    full = main_end(groups["v2-1"]) - zero
+    assert main_end(groups["v1-1"]) - zero == pytest.approx(full * 10 / 15, abs=0.2)
+    assert main_end(groups["v2-2"]) - zero == pytest.approx(full * 5 / 15, abs=0.2)
+    # v1-2 ran 20 minutes, but sat idle from 800 s to 1150 s: that wait is cut out,
+    # and a dashed line marks where, so it ends at 850 s of active time.
+    v1_2 = groups["v1-2"]
+    assert main_end(v1_2) - zero == pytest.approx(full * 850 / 900, abs=0.2)
+    cuts = re.findall(r"<line class='cut' x1='([\d.]+)'", v1_2)
+    assert [float(c) - zero for c in cuts] == [pytest.approx(full * 800 / 900, abs=0.2)]
+    assert "14m 10s active · 0 subagents · 5m 50s idle cut out<" in v1_2
+    assert "class='cut'" not in groups["v1-1"]
     # v1-1's main agent waited from 100 s to 160 s: two working bars around a wait line.
     v1_1 = groups["v1-1"]
     assert v1_1.count("class='mark main'") == 2 and v1_1.count("class='wait-track'") == 1
     assert v1_1.count("class='mark sub'") == 1 and ">explore<" in v1_1
     assert "class='mark sub'" not in groups["v2-2"] and "wait-track" not in groups["v2-2"]
-    assert "10m 00s · 1 subagent<" in v1_1
+    assert "10m 00s active · 1 subagent<" in v1_1
     assert page.count("tabindex='0'") == 4 + 1  # four main agents, one subagent
     assert "data-tip='1m 00s\nexplore · v1-1\n" in page  # tooltip lines, longest first
     assert "prefers-color-scheme: dark" in page and "max-width: 600px" in page
